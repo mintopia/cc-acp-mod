@@ -212,7 +212,7 @@ async function reportCommands($: any): Promise<void> {
 function submitPrompt($: any, text: string) {
   const slash = /^\/(\S+)(?:\s+([\s\S]*))?$/.exec(text)
   if (!slash) {
-    void $.prompt.submit({ text }).catch(() => emit($, { type: 'turn_completed', reason: 'error' }))
+    void $.prompt.submit({ text, asUser: true }).catch(() => emit($, { type: 'turn_completed', reason: 'error' }))
     return
   }
   const before = turnsStarted
