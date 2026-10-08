@@ -27,8 +27,8 @@ export async function launchHostSession(opts: {
 }): Promise<HostSession> {
   const env = opts.env ?? process.env;
   const executable = env.CLAUDE_CODE_EXECUTABLE || "claude";
-  await checkTmux();
-  await checkClaudeVersion(executable);
+  await checkTmux(env);
+  await checkClaudeVersion(executable, env);
   await trustDirectory(opts.cwd, env);
 
   const channel = new SessionChannel(socketPath(opts.sessionId, env));

@@ -17,10 +17,10 @@ export function compareVersions(a: string, b: string): number {
   return 0;
 }
 
-export async function checkClaudeVersion(executable: string): Promise<void> {
+export async function checkClaudeVersion(executable: string, env: NodeJS.ProcessEnv = process.env): Promise<void> {
   let stdout: string;
   try {
-    ({ stdout } = await run(executable, ["--version"]));
+    ({ stdout } = await run(executable, ["--version"], { env }));
   } catch (err) {
     throw new Error(`Cannot run ${executable} --version: ${(err as Error).message}`);
   }
@@ -31,9 +31,9 @@ export async function checkClaudeVersion(executable: string): Promise<void> {
   }
 }
 
-export async function checkTmux(): Promise<void> {
+export async function checkTmux(env: NodeJS.ProcessEnv = process.env): Promise<void> {
   try {
-    await run("tmux", ["-V"]);
+    await run("tmux", ["-V"], { env });
   } catch {
     throw new Error("tmux is required by cc-acp but was not found on PATH");
   }
