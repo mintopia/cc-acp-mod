@@ -1,5 +1,13 @@
 # Changelog
 
+## [0.1.3](https://github.com/mintopia/cc-acp-mod/compare/v0.1.2...v0.1.3) (2026-10-08)
+
+
+### Bug Fixes
+
+* keep prompts in arrival order when an earlier prompt is still writing attachments ([c04a9eb](https://github.com/mintopia/cc-acp-mod/commit/c04a9eb53f24740862866b72a006805e6b058816))
+* keep prompts in arrival order while attachments are written ([23df399](https://github.com/mintopia/cc-acp-mod/commit/23df3995c308ad762f830989cdad2a515d8b0ced))
+
 ## [0.1.2](https://github.com/mintopia/cc-acp-mod/compare/v0.1.1...v0.1.2) (2026-10-08)
 
 
