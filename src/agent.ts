@@ -3,7 +3,7 @@ import * as acp from "@agentclientprotocol/sdk";
 import { formAnswers, questionForm } from "./ask-user-question.js";
 import { launchHostSession, switchModel, type HostSession } from "./host-session.js";
 import { MODEL_CONFIG_ID, buildModelList, initialModelId, type ModelInfo } from "./models.js";
-import { TaskPlan, planEntries, toolInfo } from "./tool-mapping.js";
+import { TaskPlan, bashOutput, diffContent, planEntries, toolInfo } from "./tool-mapping.js";
 import type { ModEvent, TurnReason } from "./protocol.js";
 
 export interface UpdateSink {
@@ -87,6 +87,7 @@ const STOP_REASONS: Partial<Record<TurnReason, acp.StopReason>> = {
 export class CcAcpAgent {
   private readonly sessions = new Map<string, Session>();
   private formElicitation = false;
+  private terminalOutput = false;
 
   constructor(
     private readonly client: UpdateSink,
@@ -95,6 +96,7 @@ export class CcAcpAgent {
   ) {}
 
   async initialize(params: acp.InitializeRequest): Promise<acp.InitializeResponse> {
+    this.terminalOutput = (params.clientCapabilities?._meta as Record<string, unknown> | undefined)?.terminal_output === true;
     this.formElicitation = params.clientCapabilities?.elicitation?.form != null && this.client.createElicitation !== undefined;
     return {
       protocolVersion: acp.PROTOCOL_VERSION,
@@ -276,6 +278,8 @@ export class CcAcpAgent {
     } else if (event.type === "tool_started") {
       session?.tools.set(event.toolUseId, { tool: event.tool, input: event.input });
       const info = toolInfo(event.tool, event.input);
+      const bashTerminal = event.tool === "Bash" && this.terminalOutput;
+      const content = bashTerminal ? [{ type: "terminal" as const, terminalId: event.toolUseId }] : diffContent(event.tool, event.input);
       await this.client.sessionUpdate({
         sessionId,
         update: {
@@ -283,7 +287,8 @@ export class CcAcpAgent {
           toolCallId: event.toolUseId,
           status: "pending",
           rawInput: event.input,
-          _meta: { claudeCode: { toolName: event.tool } },
+          _meta: { claudeCode: { toolName: event.tool }, ...(bashTerminal ? { terminal_info: { terminal_id: event.toolUseId } } : {}) },
+          ...(content ? { content } : {}),
           ...info,
         },
       });
@@ -294,15 +299,26 @@ export class CcAcpAgent {
       const entries = planEntries(event.tool, event.input);
       if (entries) await this.client.sessionUpdate({ sessionId, update: { sessionUpdate: "plan", entries } });
     } else if (event.type === "tool_finished") {
+      const started = session?.tools.get(event.toolUseId);
+      const out = started?.tool === "Bash" && event.result !== undefined ? bashOutput(event.result) : undefined;
+      const terminal = out && this.terminalOutput;
       await this.client.sessionUpdate({
         sessionId,
         update: {
           sessionUpdate: "tool_call_update",
           toolCallId: event.toolUseId,
           status: event.isError ? "failed" : "completed",
+          ...(out && !terminal && out.text ? { content: [{ type: "content", content: { type: "text", text: `\`\`\`console\n${out.text.trimEnd()}\n\`\`\`` } }] } : {}),
+          ...(terminal
+            ? {
+                _meta: {
+                  terminal_output: { terminal_id: event.toolUseId, data: out.text },
+                  terminal_exit: { terminal_id: event.toolUseId, exit_code: out.exitCode ?? (event.isError ? 1 : 0), signal: null },
+                },
+              }
+            : {}),
         },
       });
-      const started = session?.tools.get(event.toolUseId);
       session?.tools.delete(event.toolUseId);
       const entries = started && !event.isError ? session?.taskPlan.apply(started.tool, started.input, event.result) : undefined;
       if (entries) await this.client.sessionUpdate({ sessionId, update: { sessionUpdate: "plan", entries } });

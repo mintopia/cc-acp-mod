@@ -56,6 +56,24 @@ export function toolInfo(tool: string, input: Input): ToolInfo {
   }
 }
 
+export function diffContent(tool: string, input: Input): acp.ToolCallContent[] | undefined {
+  const path = str(input.file_path);
+  if (!path) return undefined;
+  if (tool === "Edit" && typeof input.new_string === "string") {
+    return [{ type: "diff", path, oldText: typeof input.old_string === "string" ? input.old_string : "", newText: input.new_string }];
+  }
+  if (tool === "Write" && typeof input.content === "string") return [{ type: "diff", path, oldText: null, newText: input.content }];
+  return undefined;
+}
+
+export function bashOutput(result: unknown): { text: string; exitCode?: number } {
+  if (typeof result === "string") return { text: result };
+  const r = (result ?? {}) as Record<string, unknown>;
+  const text = [r.stdout, r.stderr].filter((s): s is string => typeof s === "string" && s !== "").join("\n");
+  const exitCode = [r.exitCode, r.exit_code].find((c): c is number => typeof c === "number");
+  return { text, exitCode };
+}
+
 export function planEntries(tool: string, input: Input): acp.PlanEntry[] | undefined {
   if (tool !== "TodoWrite" || !Array.isArray(input.todos)) return undefined;
   return (input.todos as { content: string; status: acp.PlanEntryStatus }[]).map((t) => ({
