@@ -18,6 +18,13 @@ export type Command =
   | { type: "set_fast"; value: string }
   | { type: "question_answer"; requestId: string; answers: Record<string, string> | null };
 
+export interface SlashCommand {
+  name: string;
+  description?: string;
+  argumentHint?: string;
+  terminalOnly?: boolean;
+}
+
 export type TurnReason = "answer" | "aborted" | "refusal" | "error";
 
 export type ModEvent =
@@ -30,6 +37,7 @@ export type ModEvent =
   | { type: "config_changed"; option: "effort" | "fast"; value: string }
   | { type: "usage"; inputTokens: number; outputTokens: number; cachedReadTokens?: number; cachedWriteTokens?: number; contextUsed: number; contextSize: number }
   | { type: "title"; title: string }
+  | { type: "commands"; commands: SlashCommand[] }
   | { type: "ask_question"; requestId: string; questions: AskQuestion[] };
 
 export const POLL_WINDOW_MS = 20_000;

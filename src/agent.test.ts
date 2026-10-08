@@ -323,3 +323,32 @@ test("Host Session is launched with proxy endpoints, never the Client's URLs", a
   expect(JSON.stringify(launched!.mcpServers)).not.toMatch(/upstream\.example|secret/);
   await agent.close();
 });
+
+test("commands event becomes available_commands_update without terminal-only commands", async () => {
+  const updates: unknown[] = [];
+  let emit!: (e: ModEvent) => void;
+  const launch: HostLauncher = async ({ sessionId, onEvent }) => {
+    emit = onEvent;
+    return { sessionId, channel: { send: () => {}, close: async () => {} } };
+  };
+  const agent = new CcAcpAgent({ sessionUpdate: async (u) => void updates.push(u.update) }, "0", launch);
+  await agent.newSession({ cwd: "/", mcpServers: [] });
+  emit({
+    type: "commands",
+    commands: [
+      { name: "review", description: "Review code", argumentHint: "<pr>" },
+      { name: "skill-x" },
+      { name: "vim", terminalOnly: true },
+    ],
+  });
+  await tick();
+  expect(updates).toEqual([
+    {
+      sessionUpdate: "available_commands_update",
+      availableCommands: [
+        { name: "review", description: "Review code", input: { hint: "<pr>" } },
+        { name: "skill-x", description: "" },
+      ],
+    },
+  ]);
+});
