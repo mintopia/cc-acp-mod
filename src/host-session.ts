@@ -5,7 +5,7 @@ import type { HostMcpServer } from "./mcp-proxy.js";
 import { checkClaudeVersion, checkTmux, trustDirectory } from "./launch.js";
 import { socketDir, socketPath } from "./paths.js";
 import { initialModelId } from "./models.js";
-import type { Hello, ModEvent } from "./protocol.js";
+import { PROTOCOL_VERSION, type Hello, type ModEvent } from "./protocol.js";
 import { readPermissionSettings, resolveModes, type ModeCatalogue } from "./modes.js";
 import { forwardedEnv, hasSession, killSession, sendEnter, startSession } from "./tmux.js";
 
@@ -81,6 +81,12 @@ export async function launchHostSession(opts: {
     try {
       const hello = await channel.waitForHello(opts.reattachTimeoutMs ?? REATTACH_TIMEOUT_MS);
       await channel.waitForBuffered(BUFFERED_DRAIN_TIMEOUT_MS);
+      if (hello.protocolVersion !== PROTOCOL_VERSION) {
+        await channel.waitForIdle();
+        await killSession(opts.sessionId);
+        channel.expectHello();
+        throw new Error("Mod protocol version skew");
+      }
       return { sessionId: opts.sessionId, channel, steering: hello.steering === true, modes, mode };
     } catch {
       await killSession(opts.sessionId);
