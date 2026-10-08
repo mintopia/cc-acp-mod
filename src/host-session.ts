@@ -7,13 +7,15 @@ import { socketDir, socketPath } from "./paths.js";
 import { initialModelId } from "./models.js";
 import type { Hello, ModEvent } from "./protocol.js";
 import { readPermissionSettings, resolveModes, type ModeCatalogue } from "./modes.js";
-import { forwardedEnv, killSession, sendEnter, startSession } from "./tmux.js";
+import { forwardedEnv, hasSession, killSession, sendEnter, startSession } from "./tmux.js";
 
 export const MOD_DIR = join(dirname(fileURLToPath(import.meta.url)), "..", "mod");
 
 export const MOD_PROBE_FILE = join(MOD_DIR, ".claude-plugin", "plugin.json");
 export const MODE_PROBE_COMMAND = "cc-acp-probe-mode";
 const STARTUP_TIMEOUT_MS = 60_000;
+const REATTACH_TIMEOUT_MS = 15_000;
+const BUFFERED_DRAIN_TIMEOUT_MS = 5_000;
 
 export class ModeTracker {
   private waiters: Array<(mode: string) => void> = [];
@@ -58,7 +60,9 @@ export async function launchHostSession(opts: {
   resume?: boolean;
   forkFrom?: string;
   onEvent: (event: ModEvent, mode: ModeTracker) => void;
+  onDisplaced?: () => void;
   startupTimeoutMs?: number;
+  reattachTimeoutMs?: number;
 }): Promise<HostSession> {
   const env = opts.env ?? process.env;
   const executable = env.CLAUDE_CODE_EXECUTABLE || "claude";
@@ -70,7 +74,18 @@ export async function launchHostSession(opts: {
   const mode = new ModeTracker(modes.initialMode);
   const channel = new SessionChannel(socketPath(opts.sessionId, env));
   channel.onEvent = (event) => opts.onEvent(event, mode);
+  channel.onDisplaced = opts.onDisplaced ?? (() => {});
   await channel.listen();
+
+  if (opts.resume && !opts.forkFrom && (await hasSession(opts.sessionId))) {
+    try {
+      const hello = await channel.waitForHello(opts.reattachTimeoutMs ?? REATTACH_TIMEOUT_MS);
+      await channel.waitForBuffered(BUFFERED_DRAIN_TIMEOUT_MS);
+      return { sessionId: opts.sessionId, channel, steering: hello.steering === true, modes, mode };
+    } catch {
+      await killSession(opts.sessionId);
+    }
+  }
 
   const argv = [executable, "--plugin-dir", MOD_DIR, ...sessionArgs(opts)];
   argv.push("--permission-mode", modes.initialMode);

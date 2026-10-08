@@ -27,6 +27,7 @@ export type HostLauncher = (opts: {
   resume?: boolean;
   forkFrom?: string;
   onEvent: (event: ModEvent, mode: ModeTracker) => void;
+  onDisplaced?: () => void;
 }) => Promise<Pick<HostSession, "sessionId" | "modes" | "mode"> & { steering?: boolean; channel: Pick<HostSession["channel"], "send" | "close"> & Partial<Pick<HostSession["channel"], "answerPermission">> }>;
 
 interface QueuedPrompt {
@@ -51,7 +52,14 @@ interface Session {
   configWaiters: Map<string, () => void>;
   attachments: SessionAttachments;
   commands?: SlashCommand[];
-  pendingPermissions: Map<string, () => void>;
+  pendingPermissions: Map<string, PendingPermission>;
+  answeredPermissions: Set<string>;
+  drain: () => Promise<void>;
+}
+
+interface PendingPermission {
+  reject: () => void;
+  ask: () => Promise<void>;
 }
 
 export const EFFORT_CONFIG_ID = "effort";
@@ -147,7 +155,10 @@ export class CcAcpAgent {
   async loadSession(params: acp.LoadSessionRequest): Promise<acp.LoadSessionResponse> {
     const { sessionId } = params;
     for (const update of await readTranscript(sessionId, process.env)) await this.client.sessionUpdate({ sessionId, update });
-    const session = this.sessions.get(sessionId) ?? (await this.startSession(sessionId, params.cwd, params.mcpServers, true));
+    const live = this.sessions.get(sessionId);
+    const session = live ?? (await this.startSession(sessionId, params.cwd, params.mcpServers, true));
+    await session.drain();
+    if (live) for (const pending of [...live.pendingPermissions.values()]) void pending.ask();
     return { modes: toAcpModeState(session.host.modes, session.host.mode.current), configOptions: configOptions(session), _meta: { steering: { supported: session.host.steering === true } } };
   }
 
@@ -161,6 +172,7 @@ export class CcAcpAgent {
   private async startSession(sessionId: string, cwd: string, clientServers: acp.McpServer[], resume: boolean, forkFrom?: string): Promise<Session> {
     const env = process.env;
     let events: Promise<void> = Promise.resolve();
+    const earlyPermissions: ModEvent[] = [];
     const pendingCommands = new Map<string, SlashCommand[]>();
     await this.mcpProxy.start();
     const mcpServers = this.mcpProxy.register(sessionId, clientServers.map((s) => s.name));
@@ -176,8 +188,10 @@ export class CcAcpAgent {
       onEvent: (event, mode) => {
         if (event.type === "ask_question") return void this.askQuestion(sessionId, event);
         if (event.type === "commands" && !this.sessions.has(sessionId)) return void pendingCommands.set(sessionId, event.commands);
+        if (event.type === "permission_request" && !this.sessions.has(sessionId)) return void earlyPermissions.push(event);
         events = events.then(() => this.onEvent(sessionId, event, mode)).catch(() => {});
       },
+      onDisplaced: () => void this.displaced(sessionId),
     }).catch((err) => {
       this.mcpProxy.unregister(sessionId);
       throw err;
@@ -195,10 +209,13 @@ export class CcAcpAgent {
       configWaiters: new Map(),
       attachments: new SessionAttachments(sessionId, env),
       pendingPermissions: new Map(),
+      answeredPermissions: new Set(),
+      drain: () => events,
     };
     session.commands = pendingCommands.get(sessionId);
     pendingCommands.delete(sessionId);
     this.sessions.set(sessionId, session);
+    for (const event of earlyPermissions) events = events.then(() => this.onEvent(sessionId, event)).catch(() => {});
     if (session.commands) setTimeout(() => void this.sendCommands(sessionId, session.commands!).catch(() => {}), 0);
     return session;
   }
@@ -319,7 +336,7 @@ export class CcAcpAgent {
     if (entry === session.current) {
       if (entry.cancelRequested) return;
       entry.cancelRequested = true;
-      for (const deny of [...session.pendingPermissions.values()]) deny();
+      for (const pending of [...session.pendingPermissions.values()]) pending.reject();
       session.host.channel.send({ type: "cancel" });
       return;
     }
@@ -359,31 +376,48 @@ export class CcAcpAgent {
     session: Session,
     event: Extract<ModEvent, { type: "permission_request" }>,
   ): Promise<void> {
+    if (session.pendingPermissions.has(event.requestId) || session.answeredPermissions.has(event.requestId)) return;
     let answered = false;
     const answer = (decision: PermissionDecision) => {
       if (answered) return;
       answered = true;
       session.pendingPermissions.delete(event.requestId);
+      session.answeredPermissions.add(event.requestId);
       session.host.channel.answerPermission?.(event.requestId, decision);
     };
-    session.pendingPermissions.set(event.requestId, () => answer("reject"));
-    if (!this.client.requestPermission) return answer("reject");
-    const toolCallId = event.toolUseId ?? event.requestId;
-    try {
-      const res = await this.client.requestPermission({
-        sessionId,
-        toolCall: { toolCallId, ...toolInfo(event.tool, event.input), rawInput: event.input },
-        options: [
-          { optionId: "allow-once", name: "Allow once", kind: "allow_once" },
-          { optionId: "allow-with-updates", name: "Always allow", kind: "allow_always" },
-          { optionId: "reject", name: "Reject", kind: "reject_once" },
-        ],
-      });
-      const optionId = res.outcome.outcome === "selected" ? res.outcome.optionId : undefined;
-      answer(optionId === "allow-once" ? "allow_once" : optionId === "allow-with-updates" ? "allow_with_updates" : "reject");
-    } catch {
-      answer("reject");
-    }
+    const ask = async () => {
+      if (!this.client.requestPermission) return answer("reject");
+      const toolCallId = event.toolUseId ?? event.requestId;
+      try {
+        const res = await this.client.requestPermission({
+          sessionId,
+          toolCall: { toolCallId, ...toolInfo(event.tool, event.input), rawInput: event.input },
+          options: [
+            { optionId: "allow-once", name: "Allow once", kind: "allow_once" },
+            { optionId: "allow-with-updates", name: "Always allow", kind: "allow_always" },
+            { optionId: "reject", name: "Reject", kind: "reject_once" },
+          ],
+        });
+        const optionId = res.outcome.outcome === "selected" ? res.outcome.optionId : undefined;
+        answer(optionId === "allow-once" ? "allow_once" : optionId === "allow-with-updates" ? "allow_with_updates" : "reject");
+      } catch {
+      }
+    };
+    session.pendingPermissions.set(event.requestId, { reject: () => answer("reject"), ask });
+    await ask();
+  }
+
+  private async displaced(sessionId: string): Promise<void> {
+    const session = this.sessions.get(sessionId);
+    if (!session) return;
+    this.sessions.delete(sessionId);
+    this.mcpProxy.unregister(sessionId);
+    const error = new Error("Session taken over by another Adapter");
+    const prompts = [...(session.current ? [session.current] : []), ...session.queue.splice(0)];
+    session.current = undefined;
+    for (const prompt of prompts) prompt.reject(error);
+    await session.host.channel.close().catch(() => {});
+    await session.attachments.cleanup();
   }
 
   private async onEvent(sessionId: string, event: ModEvent, mode: ModeTracker): Promise<void> {
@@ -491,7 +525,7 @@ export class CcAcpAgent {
     } else if (event.type === "turn_completed" && session?.current) {
       const done = session.current;
       session.current = undefined;
-      for (const deny of [...session.pendingPermissions.values()]) deny();
+      for (const pending of [...session.pendingPermissions.values()]) pending.reject();
       const stopReason = done.cancelRequested && event.reason !== "error" ? "cancelled" : STOP_REASONS[event.reason];
       const usage = session.turnUsage;
       session.turnUsage = undefined;

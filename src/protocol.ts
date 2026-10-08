@@ -7,6 +7,7 @@ export interface Hello {
   sessionId: string;
   modVersion: string;
   steering?: boolean;
+  buffered?: number;
 }
 
 export type Command =

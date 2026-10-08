@@ -13,6 +13,7 @@ beforeEach(async () => {
   dir = await mkdtemp(join(tmpdir(), "cc-acp-test-"));
   channel = new SessionChannel(join(dir, "cc-acp", "s.sock"), 100);
   await channel.listen();
+  await call("POST", "/hello", { protocolVersion: 1, sessionId: "s", modVersion: "0.1.0" });
 });
 
 afterEach(async () => {
@@ -44,7 +45,10 @@ test("hello resolves waitForHello", async () => {
 });
 
 test("waitForHello times out when the Mod never connects", async () => {
-  await expect(channel.waitForHello(20)).rejects.toThrow(/did not connect/);
+  const fresh = new SessionChannel(join(dir, "cc-acp", "quiet.sock"), 100);
+  await fresh.listen();
+  await expect(fresh.waitForHello(20)).rejects.toThrow(/did not connect/);
+  await fresh.close();
 });
 
 test("poll delivers a command sent before or during the poll", async () => {
@@ -90,4 +94,47 @@ test("permission poll returns an answer given before or during the poll, else 20
   expect(JSON.parse((await pending).body)).toEqual({ decision: "reject" });
 
   expect((await call("GET", "/permission?id=c")).status).toBe(204);
+});
+
+test("a newer Owner listening on the same path displaces this channel, which then leaves the new socket alone", async () => {
+  let displaced = 0;
+  channel.onDisplaced = () => void displaced++;
+  const next = new SessionChannel(channel.path, 100);
+  await next.listen();
+  await expect.poll(() => displaced, { timeout: 3000 }).toBe(1);
+  await channel.close();
+  expect((await stat(channel.path)).isSocket()).toBe(true);
+  await next.close();
+  channel = new SessionChannel(join(dir, "cc-acp", "s.sock"), 100);
+  await channel.listen();
+});
+
+test("waitForBuffered resolves once the hello's announced number of events has arrived", async () => {
+  await call("POST", "/hello", { protocolVersion: 1, sessionId: "s", modVersion: "0.1.0", buffered: 3 });
+  const seen: ModEvent[] = [];
+  channel.onEvent = (e) => void seen.push(e);
+  let done = false;
+  void channel.waitForBuffered(5000).then(() => (done = true));
+  await call("POST", "/events", { events: [{ type: "turn_started", turnId: "a" }, { type: "chunk", kind: "text", text: "x" }] });
+  await new Promise((r) => setTimeout(r, 20));
+  expect(done).toBe(false);
+  await call("POST", "/events", { events: [{ type: "turn_completed", reason: "answer" }] });
+  await expect.poll(() => done).toBe(true);
+  expect(seen).toHaveLength(3);
+});
+
+test("a second hello is accepted so a reconnecting Mod can re-announce itself", async () => {
+  const hello = { protocolVersion: 1, sessionId: "s", modVersion: "0.1.0" };
+  expect((await call("POST", "/hello", hello)).status).toBe(204);
+  expect((await call("POST", "/hello", { ...hello, buffered: 1 })).status).toBe(204);
+});
+
+test("requests before hello get 409 so a Mod talking to a new Owner knows to re-hello", async () => {
+  const fresh = new SessionChannel(join(dir, "cc-acp", "fresh.sock"), 100);
+  await fresh.listen();
+  const status = await new Promise<number>((resolve, reject) => {
+    request({ socketPath: fresh.path, method: "GET", path: "/poll" }, (res) => resolve(res.statusCode!)).on("error", reject).end();
+  });
+  await fresh.close();
+  expect(status).toBe(409);
 });
