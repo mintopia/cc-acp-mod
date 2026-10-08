@@ -3,6 +3,7 @@ import type { Register } from 'claude-code'
 const PROTOCOL_VERSION = 1
 const MOD_VERSION = '0.1.0'
 const RETRY_MS = 1_000
+const TITLE_MAX = 80
 
 type Event =
   | { type: 'turn_started'; turnId: string }
@@ -12,6 +13,8 @@ type Event =
   | { type: 'turn_completed'; reason: string }
   | { type: 'model_changed'; id: string }
   | { type: 'config_changed'; option: 'effort' | 'fast'; value: string }
+  | { type: 'usage'; inputTokens: number; outputTokens: number; cachedReadTokens?: number; cachedWriteTokens?: number; contextUsed: number; contextSize: number }
+  | { type: 'title'; title: string }
   | { type: 'ask_question'; requestId: string; questions: unknown[] }
 
 let outbox: Event[] = []
@@ -20,6 +23,7 @@ let connected = false
 let socketPath: string | undefined
 let started = false
 let lastModel: string | undefined
+let lastTitle: string | undefined
 let nextRequest = 0
 const pendingQuestions = new Map<string, (answers: Record<string, string> | null) => void>()
 
@@ -64,6 +68,40 @@ async function reportModel($: any): Promise<void> {
       lastModel = id
       emit($, { type: 'model_changed', id })
     }
+  } catch {}
+}
+
+async function reportUsage($: any, e: any): Promise<void> {
+  const u = e.usage
+  if (!u || typeof u.input_tokens !== 'number' || typeof u.output_tokens !== 'number') return
+  const cacheRead = u.cache_read_input_tokens
+  const cacheWrite = u.cache_creation_input_tokens
+  let contextSize = 200_000
+  let contextUsed = u.input_tokens + (cacheRead ?? 0) + (cacheWrite ?? 0) + u.output_tokens
+  try {
+    const { context } = await $.session.usage()
+    if (typeof context.window === 'number') contextSize = context.window
+    if (typeof context.tokens === 'number') contextUsed = context.tokens
+  } catch {}
+  emit($, {
+    type: 'usage',
+    inputTokens: u.input_tokens,
+    outputTokens: u.output_tokens,
+    ...(typeof cacheRead === 'number' ? { cachedReadTokens: cacheRead } : {}),
+    ...(typeof cacheWrite === 'number' ? { cachedWriteTokens: cacheWrite } : {}),
+    contextUsed,
+    contextSize,
+  })
+}
+
+async function reportTitle($: any): Promise<void> {
+  if (lastTitle !== undefined) return
+  try {
+    const first = (await $.session.messages()).find((m: any) => m.role === 'user' && typeof m.text === 'string' && m.text.trim() !== '')
+    if (!first) return
+    const line = first.text.trim().split('\n')[0].replace(/\s+/g, ' ')
+    lastTitle = line.length > TITLE_MAX ? `${line.slice(0, TITLE_MAX - 1)}…` : line
+    emit($, { type: 'title', title: lastTitle })
   } catch {}
 }
 
@@ -169,7 +207,11 @@ export const register: Register = (on) => {
   })
 
   on('turn.complete', async ($, e, next) => {
-    if (e.agentId === undefined) emit($, { type: 'turn_completed', reason: e.reason })
+    if (e.agentId === undefined) {
+      await reportUsage($, e)
+      await reportTitle($)
+      emit($, { type: 'turn_completed', reason: e.reason })
+    }
     void reportModel($)
     return next(e)
   })

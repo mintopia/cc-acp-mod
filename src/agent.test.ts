@@ -280,3 +280,24 @@ test("Bash output uses terminal _meta when the client opts in", async () => {
     terminal_exit: { terminal_id: "b", exit_code: 0, signal: null },
   });
 });
+
+test("usage event emits usage_update and the prompt response carries turn usage", async () => {
+  const h = recordingHarness();
+  const { sessionId } = await h.agent.newSession({ cwd: "/", mcpServers: [] });
+  const p = h.agent.prompt(promptOf(sessionId, "a"));
+  h.emit({ type: "usage", inputTokens: 10, outputTokens: 5, cachedReadTokens: 3, contextUsed: 18, contextSize: 200000 });
+  h.emit({ type: "turn_completed", reason: "answer" });
+  expect(await p).toEqual({
+    stopReason: "end_turn",
+    usage: { totalTokens: 18, inputTokens: 10, outputTokens: 5, cachedReadTokens: 3 },
+  });
+  expect(h.updates).toEqual([{ sessionUpdate: "usage_update", used: 18, size: 200000 }]);
+});
+
+test("title event emits session_info_update", async () => {
+  const h = recordingHarness();
+  await h.agent.newSession({ cwd: "/", mcpServers: [] });
+  h.emit({ type: "title", title: "Fix the bug" });
+  await tick();
+  expect(h.updates[0]).toMatchObject({ sessionUpdate: "session_info_update", title: "Fix the bug" });
+});

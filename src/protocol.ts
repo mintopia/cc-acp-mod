@@ -28,6 +28,8 @@ export type ModEvent =
   | { type: "turn_completed"; reason: TurnReason }
   | { type: "model_changed"; id: string }
   | { type: "config_changed"; option: "effort" | "fast"; value: string }
+  | { type: "usage"; inputTokens: number; outputTokens: number; cachedReadTokens?: number; cachedWriteTokens?: number; contextUsed: number; contextSize: number }
+  | { type: "title"; title: string }
   | { type: "ask_question"; requestId: string; questions: AskQuestion[] };
 
 export const POLL_WINDOW_MS = 20_000;
