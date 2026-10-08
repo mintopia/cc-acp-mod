@@ -101,7 +101,7 @@ function recordingHarness() {
   const updates: any[] = [];
   let emit!: (e: ModEvent) => void;
   const launch: HostLauncher = async ({ sessionId, onEvent }) => {
-    emit = onEvent;
+    emit = (e) => onEvent(e, new ModeTracker("default"));
     return { sessionId, ...hostModes(), channel: { send: () => {}, close: async () => {} } };
   };
   const agent = new CcAcpAgent({ sessionUpdate: async (p) => void updates.push(p.update) }, "0", launch);
@@ -191,7 +191,7 @@ test("effort and fast config options are offered, applied via the Host Session a
   const updates: any[] = [];
   let emit!: (e: ModEvent) => void;
   const launch: HostLauncher = async ({ sessionId, onEvent }) => {
-    emit = onEvent;
+    emit = (e) => onEvent(e, new ModeTracker("default"));
     return { sessionId, ...hostModes(), channel: { send: (c) => void sent.push(c), close: async () => {} } };
   };
   const agent = new CcAcpAgent({ sessionUpdate: async (p) => void updates.push(p.update) }, "0", launch);
@@ -220,7 +220,7 @@ function elicitHarness(opts: { form: boolean; respond?: (p: any) => any }) {
   const asked: any[] = [];
   let emit!: (e: ModEvent) => void;
   const launch: HostLauncher = async ({ sessionId, onEvent, disallowedTools }) => {
-    emit = onEvent;
+    emit = (e) => onEvent(e, new ModeTracker("default"));
     launched.push({ disallowedTools });
     return { sessionId, ...hostModes(), channel: { send: (c) => void sent.push(c), close: async () => {} } };
   };
@@ -384,7 +384,7 @@ test("commands event becomes available_commands_update without terminal-only com
   const updates: unknown[] = [];
   let emit!: (e: ModEvent) => void;
   const launch: HostLauncher = async ({ sessionId, onEvent }) => {
-    emit = onEvent;
+    emit = (e) => onEvent(e, new ModeTracker("default"));
     return { sessionId, ...hostModes(), channel: { send: () => {}, close: async () => {} } };
   };
   const agent = new CcAcpAgent({ sessionUpdate: async (u) => void updates.push(u.update) }, "0", launch);
@@ -440,7 +440,7 @@ function permissionHarness(pick: (req: any) => Promise<any>) {
   let emit!: (e: ModEvent) => void;
   const sent: Command[] = [];
   const launch: HostLauncher = async ({ sessionId, onEvent }) => {
-    emit = onEvent;
+    emit = (e) => onEvent(e, new ModeTracker("default"));
     return {
       sessionId,
       ...hostModes(),

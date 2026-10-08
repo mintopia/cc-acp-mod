@@ -8,6 +8,7 @@ export interface Hello {
   modVersion: string;
   steering?: boolean;
   buffered?: number;
+  busy?: boolean;
 }
 
 export type Command =

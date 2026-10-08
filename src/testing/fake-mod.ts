@@ -1,5 +1,5 @@
 import { request } from "node:http";
-import { PROTOCOL_VERSION, type Command, type ModEvent } from "../protocol.js";
+import { PROTOCOL_VERSION, type Command, type Hello, type ModEvent } from "../protocol.js";
 
 export class FakeMod {
   readonly commands: Command[] = [];
@@ -9,8 +9,8 @@ export class FakeMod {
 
   constructor(private readonly socketPath: string, private readonly sessionId: string) {}
 
-  async connect(): Promise<void> {
-    await this.post("/hello", { protocolVersion: PROTOCOL_VERSION, sessionId: this.sessionId, modVersion: "fake" });
+  async connect(hello: Partial<Hello> = {}): Promise<void> {
+    await this.post("/hello", { protocolVersion: PROTOCOL_VERSION, sessionId: this.sessionId, modVersion: "fake", ...hello });
     this.loop = this.pollLoop();
   }
 

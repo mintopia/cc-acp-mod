@@ -10,7 +10,9 @@ type Waiter = { resolve: (cmd: Command | null) => void; timer: NodeJS.Timeout };
 export class SessionChannel {
   private server?: Server;
   private helloResolve!: (hello: Hello) => void;
-  private readonly helloPromise: Promise<Hello>;
+  private helloPromise: Promise<Hello>;
+  private turnActive = false;
+  private idleWaiters: Array<() => void> = [];
   private readonly commands: Command[] = [];
   private waiter?: Waiter;
   private readonly answers = new Map<string, PermissionDecision>();
@@ -27,6 +29,33 @@ export class SessionChannel {
 
   constructor(readonly path: string, private readonly pollWindowMs = POLL_WINDOW_MS) {
     this.helloPromise = new Promise((resolve) => (this.helloResolve = resolve));
+  }
+
+  expectHello(): void {
+    this.helloed = false;
+    this.helloPromise = new Promise((resolve) => (this.helloResolve = resolve));
+  }
+
+  waitForIdle(timeoutMs: number): Promise<boolean> {
+    if (!this.turnActive) return Promise.resolve(true);
+    return new Promise((resolve) => {
+      const done = () => {
+        clearTimeout(timer);
+        resolve(!this.turnActive);
+      };
+      const timer = setTimeout(() => {
+        this.idleWaiters = this.idleWaiters.filter((w) => w !== done);
+        resolve(false);
+      }, timeoutMs);
+      this.idleWaiters.push(done);
+    });
+  }
+
+  private trackTurn(event: ModEvent): void {
+    if (event.type === "turn_started") this.turnActive = true;
+    if (event.type !== "turn_completed") return;
+    this.turnActive = false;
+    for (const done of this.idleWaiters.splice(0)) done();
   }
 
   async listen(): Promise<void> {
@@ -107,6 +136,8 @@ export class SessionChannel {
   async close(): Promise<void> {
     clearInterval(this.watcher);
     for (const done of this.bufferedWaiters.splice(0)) done();
+    this.turnActive = false;
+    for (const done of this.idleWaiters.splice(0)) done();
     for (const { resolve, timer } of this.answerWaiters.values()) {
       clearTimeout(timer);
       resolve(null);
@@ -128,6 +159,8 @@ export class SessionChannel {
       if (!this.helloed && req.url !== "/hello") return reply(res, 409);
       if (req.method === "POST" && req.url === "/hello") {
         const hello = await readJson<Hello>(req);
+        this.turnActive = hello.busy === true;
+        if (!this.turnActive) for (const done of this.idleWaiters.splice(0)) done();
         this.buffered = hello.buffered ?? 0;
         this.received = 0;
         this.helloed = true;
@@ -136,7 +169,10 @@ export class SessionChannel {
       }
       if (req.method === "POST" && req.url === "/events") {
         const { events } = await readJson<{ events: ModEvent[] }>(req);
-        for (const event of events) this.onEvent(event);
+        for (const event of events) {
+          this.trackTurn(event);
+          this.onEvent(event);
+        }
         this.countEvents(events.length);
         return reply(res, 204);
       }

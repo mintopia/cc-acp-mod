@@ -138,3 +138,30 @@ test("requests before hello get 409 so a Mod talking to a new Owner knows to re-
   await fresh.close();
   expect(status).toBe(409);
 });
+
+test("waitForIdle resolves immediately when no turn is in flight", async () => {
+  await expect(channel.waitForIdle(50)).resolves.toBe(true);
+});
+
+test("waitForIdle waits for turn_completed after a busy hello", async () => {
+  await call("POST", "/hello", { protocolVersion: 0, sessionId: "s", modVersion: "old", busy: true });
+  let idle = false;
+  const waiting = channel.waitForIdle(1000).then(() => (idle = true));
+  await new Promise((r) => setTimeout(r, 30));
+  expect(idle).toBe(false);
+  await call("POST", "/events", { events: [{ type: "turn_completed", reason: "answer" }] });
+  await waiting;
+  expect(idle).toBe(true);
+});
+
+test("expectHello makes waitForHello wait for the replacement Mod's hello", async () => {
+  channel.expectHello();
+  const waiting = channel.waitForHello(1000);
+  await call("POST", "/hello", { protocolVersion: 1, sessionId: "s", modVersion: "new" });
+  expect((await waiting).modVersion).toBe("new");
+});
+
+test("waitForIdle gives up after the timeout while a turn stays in flight", async () => {
+  await call("POST", "/hello", { protocolVersion: 0, sessionId: "s", modVersion: "old", busy: true });
+  await expect(channel.waitForIdle(30)).resolves.toBe(false);
+});

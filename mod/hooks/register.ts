@@ -259,7 +259,7 @@ async function connect($: any): Promise<void> {
     for (const request of pending.values()) {
       if (!outbox.some((e) => e.type === 'permission_request' && e.requestId === request.requestId)) outbox.push(request)
     }
-    await post($, '/hello', { protocolVersion: PROTOCOL_VERSION, sessionId, modVersion: MOD_VERSION, steering, buffered: outbox.length })
+    await post($, '/hello', { protocolVersion: PROTOCOL_VERSION, sessionId, modVersion: MOD_VERSION, steering, buffered: outbox.length, busy: isBusy() })
     connected = true
     unownedSince = undefined
     retryMs = RETRY_MS

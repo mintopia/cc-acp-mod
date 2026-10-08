@@ -5,7 +5,7 @@ import type { HostMcpServer } from "./mcp-proxy.js";
 import { checkClaudeVersion, checkTmux, trustDirectory } from "./launch.js";
 import { socketDir, socketPath } from "./paths.js";
 import { initialModelId } from "./models.js";
-import type { Hello, ModEvent } from "./protocol.js";
+import { PROTOCOL_VERSION, type Hello, type ModEvent } from "./protocol.js";
 import { readPermissionSettings, resolveModes, type ModeCatalogue } from "./modes.js";
 import { forwardedEnv, hasSession, killSession, sendEnter, startSession } from "./tmux.js";
 
@@ -16,6 +16,7 @@ export const MODE_PROBE_COMMAND = "cc-acp-probe-mode";
 const STARTUP_TIMEOUT_MS = 60_000;
 const REATTACH_TIMEOUT_MS = 15_000;
 const BUFFERED_DRAIN_TIMEOUT_MS = 5_000;
+const SKEW_IDLE_TIMEOUT_MS = 30_000;
 
 export class ModeTracker {
   private waiters: Array<(mode: string) => void> = [];
@@ -63,6 +64,7 @@ export async function launchHostSession(opts: {
   onDisplaced?: () => void;
   startupTimeoutMs?: number;
   reattachTimeoutMs?: number;
+  skewIdleTimeoutMs?: number;
 }): Promise<HostSession> {
   const env = opts.env ?? process.env;
   const executable = env.CLAUDE_CODE_EXECUTABLE || "claude";
@@ -81,6 +83,13 @@ export async function launchHostSession(opts: {
     try {
       const hello = await channel.waitForHello(opts.reattachTimeoutMs ?? REATTACH_TIMEOUT_MS);
       await channel.waitForBuffered(BUFFERED_DRAIN_TIMEOUT_MS);
+      if (hello.protocolVersion !== PROTOCOL_VERSION) {
+        if (await channel.waitForIdle(opts.skewIdleTimeoutMs ?? SKEW_IDLE_TIMEOUT_MS)) {
+          await killSession(opts.sessionId);
+          channel.expectHello();
+          throw new Error("Mod protocol version skew");
+        }
+      }
       return { sessionId: opts.sessionId, channel, steering: hello.steering === true, modes, mode };
     } catch {
       await killSession(opts.sessionId);
