@@ -1,0 +1,32 @@
+{
+  "name": "cc-acp",
+  "version": "0.1.0",
+  "description": "ACP agent for Claude Code that drives an interactive session in tmux",
+  "type": "module",
+  "bin": {
+    "cc-acp": "dist/index.js"
+  },
+  "files": [
+    "dist",
+    "mod"
+  ],
+  "engines": {
+    "node": ">=20"
+  },
+  "scripts": {
+    "build": "tsc -p tsconfig.build.json",
+    "typecheck": "tsc --noEmit",
+    "test": "vitest run",
+    "prepack": "npm run build",
+    "e2e": "npm run build && node e2e/run.mjs"
+  },
+  "dependencies": {
+    "@agentclientprotocol/sdk": "^1.7.0"
+  },
+  "devDependencies": {
+    "@types/node": "^26.6.4",
+    "ajv": "^8.20.0",
+    "typescript": "^7.0.2",
+    "vitest": "^5.0.3"
+  }
+}

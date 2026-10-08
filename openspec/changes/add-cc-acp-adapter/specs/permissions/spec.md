@@ -16,7 +16,7 @@ The Mod's `classic.PermissionRequest` hook SHALL forward each permission request
 - **THEN** the tool is denied
 
 ### Requirement: Unbounded wait for an answer
-A pending permission request SHALL wait without timeout; while no Client is attached the Host Session counts as busy, and the request SHALL be re-sent to the next Owner's Client on Reattach.
+A pending permission request SHALL wait without timeout (the hook awaits by chaining polls of at most 25 seconds, and the built-in dialog renders concurrently until the hook answers); while no Client is attached the Host Session counts as busy, and the request SHALL be re-sent to the next Owner's Client on Reattach.
 
 #### Scenario: Client gone during permission
 - **WHEN** the Client disconnects while a permission request is pending and later reloads the session

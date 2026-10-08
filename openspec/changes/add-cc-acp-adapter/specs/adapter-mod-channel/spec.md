@@ -8,7 +8,7 @@ The Owner SHALL listen on a Unix socket at `$XDG_RUNTIME_DIR/cc-acp/<sessionId>.
 - **THEN** only the owning user can connect to it
 
 ### Requirement: Mod long-polls for commands and posts events
-The Mod SHALL start from `session.start`, send a hello with its protocol version, long-poll the socket for commands, and post events in order.
+The Mod SHALL start from `session.start`, send a hello with its protocol version, long-poll the socket for commands in windows no longer than 25 seconds (`$.http.fetch` aborts at 30s), and post events in order. The `session.start` hook SHALL return promptly and run the poll loop detached, because an awaiting `session.start` delays processing of the first prompt.
 
 #### Scenario: Prompt command
 - **WHEN** the Adapter enqueues a `prompt` command

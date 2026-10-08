@@ -25,12 +25,20 @@ The Mod runs sandboxed inside Claude Code: no Node, no listening sockets. It can
 - ADR-0003: no screen scraping; tmux keystrokes only for control actions
 - ADR-0004: Adapter proxies the Client's MCP servers
 
-## Risks / Open Questions (resolved by the spike)
-- Does `--plugin-dir` trigger any prompt on an unattended launch?
-- Is long-poll `$.http.fetch` to a Unix socket permitted?
-- Can a `PermissionRequest` hook wait minutes?
-- Can the Mod read the current permission mode; does Shift+Tab cycling work via `send-keys`?
-- What happens to `$.prompt.submit` while a built-in dialog is open?
-- Does `$.command.run('model', id)` work from the Mod?
+## Spike findings (issue #2, claude 2.1.293)
+Probe Mod loaded via `--plugin-dir`, driven in tmux against a Unix-socket HTTP server. All six questions answered with evidence.
 
-If the spike invalidates an assumption, update this design and the affected spec before implementation.
+1. **`--plugin-dir` prompts**: none. The only startup dialog is Claude Code's folder-trust dialog for a never-trusted cwd, shown before the Mod loads; once the cwd is trusted the Mod loads silently. Confirms Launch prep (trust cwd in `~/.claude.json`) and the fail-on-other-dialog rule.
+2. **Long-poll over `socketPath`**: works, but `$.http.fetch` hard-aborts at **30s** ("no complete answer within 30000ms"). A poll window MUST be under 30s (25s worked repeatedly, back-to-back, 150s+ total).
+3. **`classic.PermissionRequest` waiting minutes**: works. The hook awaited 150s (six chained 25s fetches) and its `{decision:{behavior:'allow'}}` ran the tool ("Allowed by PermissionRequest hook"). The built-in permission dialog renders in the TUI *while the hook is awaiting* and is dismissed when the hook answers. A hook cannot hold one fetch longer than 30s, so it loops short polls.
+4. **Permission mode**: readable. `classic.UserPromptSubmit` and `classic.PermissionRequest` carry `permission_mode` (`default` observed); `classic.PreToolUse` does not. Shift+Tab via `tmux send-keys BTab` does cycle modes, but the cycle is NOT fixed: the order and members depend on launch mode and one-time opt-ins (bypass -> auto -> acceptEdits -> plan -> bypass in one run; bypass -> auto -> manual in another; entering auto may show a first-time opt-in dialog). `--permission-mode default` was overridden to bypass by existing user settings. `set_mode` must press, read back, and repeat with a bound, never assume a sequence; the footer text is not a data source (ADR-0003), so read back via the Mod.
+5. **`$.prompt.submit` during a dialog**: not lost and not injected into the dialog. It stays pending (its promise resolved ~50s later) and runs as a normal turn once the dialog is resolved and the session idle. Two traps: (a) calling it from inside a `classic.PermissionRequest` hook (even via a timer that hook created) is refused by the host ("would wait on the turn this hook may be holding"); (b) awaiting a long fetch in `session.start` delayed processing of the first typed prompt, so `session.start` must return promptly and run the poll loop detached (`$.clock`).
+6. **`$.command.run({command:'model', args:id})`**: works, with caveats. It is queued until the session is idle. Mid-conversation it opens a "Switch model? ... full history gets re-read" confirmation dialog that blocks the call until answered (promise resolved only after Enter), then sets the model. It also **persists the model as the user's default** in `~/.claude/settings.json` ("saved as your default for new sessions"), a side effect on the user's global settings.
+
+### Impact
+- Poll window <= 25s, not an unbounded long-poll; `session.start` returns immediately (adapter-mod-channel).
+- `set_mode` loops with Mod readback (modes-and-models).
+- `set_model` is queued, may need a confirmation keystroke, and mutates global settings; prefer the launch-time model (`--model` / `ANTHROPIC_MODEL`) and use `/model` only for mid-session changes (modes-and-models).
+- Permission requests loop short polls and tolerate the concurrent TUI dialog (permissions).
+- Submit prompts from a later event or a detached timer, never from within a permission hook.
+- Not exercised: waits beyond ~150s, hot-reload with `$.state`, and whether the persisted default can be avoided.
