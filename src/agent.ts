@@ -156,6 +156,7 @@ export class CcAcpAgent {
     const { sessionId } = params;
     for (const update of await readTranscript(sessionId, process.env)) await this.client.sessionUpdate({ sessionId, update });
     const live = this.sessions.get(sessionId);
+    if (live) this.mcpProxy.setClient(sessionId, params.mcpServers);
     const session = live ?? (await this.startSession(sessionId, params.cwd, params.mcpServers, true));
     await session.drain();
     if (live) for (const pending of [...live.pendingPermissions.values()]) void pending.ask();

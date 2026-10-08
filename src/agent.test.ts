@@ -1,4 +1,6 @@
 import { describe, expect, test, vi } from "vitest";
+import { createServer } from "node:http";
+import type * as acp from "@agentclientprotocol/sdk";
 import * as tmux from "./tmux.js";
 import { CcAcpAgent, type HostLauncher } from "./agent.js";
 import { ModeTracker } from "./host-session.js";
@@ -345,6 +347,37 @@ test("Host Session is launched with proxy endpoints, never the Client's URLs", a
   expect(url).toMatch(/^http:\/\/127\.0\.0\.1:\d+\//);
   expect(JSON.stringify(launched!.mcpServers)).not.toMatch(/upstream\.example|secret/);
   await agent.close();
+});
+
+test("Reattach to a live Host Session swaps MCP credentials without relaunching", async () => {
+  const seen: (string | undefined)[] = [];
+  const upstream = createServer((req, res) => {
+    seen.push(req.headers.authorization);
+    req.resume();
+    res.writeHead(200, { "content-type": "application/json" }).end("{}");
+  });
+  await new Promise<void>((resolve) => upstream.listen(0, "127.0.0.1", resolve));
+  const upstreamUrl = `http://127.0.0.1:${(upstream.address() as { port: number }).port}/mcp`;
+  const server = (token: string): acp.McpServer => ({ type: "http", name: "harmonic", url: upstreamUrl, headers: [{ name: "authorization", value: `Bearer ${token}` }] });
+  let launches = 0;
+  let proxyUrl = "";
+  const agent = new CcAcpAgent({ sessionUpdate: async () => {} }, "0", async (opts) => {
+    launches++;
+    proxyUrl = opts.mcpServers!.harmonic!.url;
+    return { sessionId: opts.sessionId, ...hostModes(), channel: { send: () => {}, close: async () => {} } };
+  });
+  const call = () => fetch(proxyUrl, { method: "POST", headers: { "content-type": "application/json" }, body: JSON.stringify({ jsonrpc: "2.0", id: 1, method: "tools/list" }) });
+  try {
+    const { sessionId } = await agent.newSession({ cwd: "/", mcpServers: [server("old")] });
+    await call();
+    await agent.loadSession({ sessionId, cwd: "/", mcpServers: [server("new")] });
+    await call();
+    expect(seen).toEqual(["Bearer old", "Bearer new"]);
+    expect(launches).toBe(1);
+  } finally {
+    await agent.close();
+    upstream.close();
+  }
 });
 
 test("commands event becomes available_commands_update without terminal-only commands", async () => {
