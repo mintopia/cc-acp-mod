@@ -7,6 +7,8 @@ import * as Ajv2020Module from "ajv/dist/2020.js";
 import { SessionChannel } from "../channel.js";
 import type { HostLauncher } from "../agent.js";
 import { serveAgent } from "../server.js";
+import { ModeTracker } from "../host-session.js";
+import { resolveModes } from "../modes.js";
 import { FakeMod } from "./fake-mod.js";
 
 const schema = createRequire(import.meta.url)("@agentclientprotocol/sdk/schema/schema.json") as object;
@@ -21,6 +23,10 @@ const RESULT_DEFS: Record<string, string> = {
   "session/new": "NewSessionResponse",
   "session/load": "LoadSessionResponse",
   "session/fork": "ForkSessionResponse",
+  "session/list": "ListSessionsResponse",
+  "session/resume": "ResumeSessionResponse",
+  "session/close": "CloseSessionResponse",
+  "session/delete": "DeleteSessionResponse",
   "session/prompt": "PromptResponse",
   "session/set_config_option": "SetSessionConfigOptionResponse",
 };
@@ -76,14 +82,16 @@ export async function startHarness(): Promise<Harness> {
     if (forkFrom) forkedFrom.set(sessionId, forkFrom);
     resumed.set(sessionId, resume === true);
     const channel = new SessionChannel(join(dir, `${sessionId}.sock`));
-    channel.onEvent = onEvent;
+    const modes = resolveModes([], {}, false);
+    const mode = new ModeTracker(modes.initialMode);
+    channel.onEvent = (event) => onEvent(event, mode);
     await channel.listen();
     channels.push(channel);
     const mod = new FakeMod(channel.path, sessionId);
     mods.set(sessionId, mod);
     await mod.connect();
     await channel.waitForHello(2000);
-    return { sessionId, channel };
+    return { sessionId, channel, modes, mode };
   };
 
   const toAgent = new TransformStream<Uint8Array, Uint8Array>();
