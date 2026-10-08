@@ -28,6 +28,30 @@ export async function readTranscript(sessionId: string, env: NodeJS.ProcessEnv =
   return file ? replayUpdates(await readFile(file, "utf8")) : [];
 }
 
+type Entry = {
+  type?: string;
+  cwd?: string;
+  isMeta?: boolean;
+  isSidechain?: boolean;
+  customTitle?: string;
+  aiTitle?: string;
+  message?: { content?: unknown };
+};
+
+function* entries(jsonl: string): Generator<Entry> {
+  for (const line of jsonl.split("\n")) {
+    if (!line.trim()) continue;
+    try {
+      yield JSON.parse(line) as Entry;
+    } catch {}
+  }
+}
+
+function blocksOf(content: unknown): Array<Record<string, unknown>> {
+  if (typeof content === "string") return [{ type: "text", text: content }];
+  return Array.isArray(content) ? content : [];
+}
+
 function resultText(content: unknown): string {
   if (typeof content === "string") return content;
   if (!Array.isArray(content)) return "";
@@ -39,18 +63,9 @@ export function replayUpdates(jsonl: string): Update[] {
   const text = (sessionUpdate: "user_message_chunk" | "agent_message_chunk" | "agent_thought_chunk", value: string) =>
     updates.push({ sessionUpdate, content: { type: "text", text: value } });
 
-  for (const line of jsonl.split("\n")) {
-    if (!line.trim()) continue;
-    let entry: { type?: string; isMeta?: boolean; isSidechain?: boolean; message?: { content?: unknown } };
-    try {
-      entry = JSON.parse(line);
-    } catch {
-      continue;
-    }
+  for (const entry of entries(jsonl)) {
     if ((entry.type !== "user" && entry.type !== "assistant") || entry.isMeta || entry.isSidechain) continue;
-    const content = entry.message?.content;
-    const blocks = typeof content === "string" ? [{ type: "text", text: content }] : Array.isArray(content) ? content : [];
-    for (const block of blocks as Array<Record<string, unknown>>) {
+    for (const block of blocksOf(entry.message?.content)) {
       if (block.type === "text" && typeof block.text === "string") {
         const visible = entry.type === "user" ? block.text.replace(HIDDEN_MARKERS, "").trim() : block.text;
         if (visible) text(entry.type === "user" ? "user_message_chunk" : "agent_message_chunk", visible);
@@ -90,8 +105,7 @@ interface Listed {
 }
 
 function firstUserText(content: unknown): string | undefined {
-  const blocks = typeof content === "string" ? [{ type: "text", text: content }] : Array.isArray(content) ? content : [];
-  for (const block of blocks as Array<Record<string, unknown>>) {
+  for (const block of blocksOf(content)) {
     if (block.type !== "text" || typeof block.text !== "string") continue;
     const visible = block.text.replace(HIDDEN_MARKERS, "").trim();
     if (visible) return visible;
@@ -103,14 +117,7 @@ export function summariseTranscript(jsonl: string): { cwd?: string; title?: stri
   let cwd: string | undefined;
   let named: string | undefined;
   let firstPrompt: string | undefined;
-  for (const line of jsonl.split("\n")) {
-    if (!line.trim()) continue;
-    let entry: { type?: string; cwd?: string; isMeta?: boolean; isSidechain?: boolean; customTitle?: string; aiTitle?: string; message?: { content?: unknown } };
-    try {
-      entry = JSON.parse(line);
-    } catch {
-      continue;
-    }
+  for (const entry of entries(jsonl)) {
     if (!cwd && typeof entry.cwd === "string") cwd = entry.cwd;
     if (entry.type === "custom-title" && entry.customTitle) named = entry.customTitle;
     else if (entry.type === "ai-title" && entry.aiTitle && !named) named = entry.aiTitle;

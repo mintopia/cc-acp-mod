@@ -29,7 +29,7 @@ export interface SlashCommand {
 
 export type PermissionDecision = "allow_once" | "allow_with_updates" | "reject";
 
-export type TurnReason = "answer" | "aborted" | "refusal" | "error";
+export type TurnReason = "answer" | "aborted" | "max_tokens" | "refusal" | "error";
 
 export type ModEvent =
   | { type: "turn_started"; turnId: string }

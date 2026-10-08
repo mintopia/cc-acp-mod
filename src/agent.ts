@@ -11,6 +11,7 @@ import { SessionAttachments, promptText } from "./prompt-content.js";
 import { TaskPlan, bashOutput, diffContent, planEntries, toolInfo } from "./tool-mapping.js";
 import { findTranscript, listTranscripts, readTranscript } from "./transcript.js";
 import { rm } from "node:fs/promises";
+import { setTimeout as sleep } from "node:timers/promises";
 import { killSession, pressShiftTab, typeCommand } from "./tmux.js";
 import type { ModEvent, PermissionDecision, SlashCommand, TurnReason } from "./protocol.js";
 
@@ -109,8 +110,17 @@ const PROBE_DRAIN_MS = 500;
 const STOP_REASONS: Partial<Record<TurnReason, acp.StopReason>> = {
   answer: "end_turn",
   aborted: "cancelled",
+  max_tokens: "max_tokens",
   refusal: "refusal",
 };
+
+function sessionState(session: Session) {
+  return {
+    modes: toAcpModeState(session.host.modes, session.host.mode.current),
+    configOptions: configOptions(session),
+    _meta: { steering: { supported: session.host.steering === true } },
+  };
+}
 
 function availableCommands(commands: SlashCommand[]): acp.AvailableCommand[] {
   return commands
@@ -144,14 +154,14 @@ export class CcAcpAgent {
       protocolVersion: acp.PROTOCOL_VERSION,
       authMethods: authMethods as acp.InitializeResponse["authMethods"],
       agentInfo: { name: "cc-acp", title: "Claude Code (cc-acp)", version: this.version },
-      agentCapabilities: { loadSession: true, sessionCapabilities: { fork: {}, list: {}, resume: {}, close: {}, delete: {} }, promptCapabilities: { image: true }, mcpCapabilities: { http: true, sse: true } },
+      agentCapabilities: { loadSession: true, sessionCapabilities: { fork: {}, list: {}, resume: {}, close: {}, delete: {} }, promptCapabilities: { image: true, embeddedContext: true }, mcpCapabilities: { http: true, sse: true } },
     };
   }
 
   async newSession(params: acp.NewSessionRequest): Promise<acp.NewSessionResponse> {
     const sessionId = randomUUID();
     const session = await this.startSession(sessionId, params.cwd, params.mcpServers, false);
-    return { sessionId, modes: toAcpModeState(session.host.modes, session.host.mode.current), configOptions: configOptions(session), _meta: { steering: { supported: session.host.steering === true } } };
+    return { sessionId, ...sessionState(session) };;
   }
 
   async loadSession(params: acp.LoadSessionRequest): Promise<acp.LoadSessionResponse> {
@@ -160,9 +170,7 @@ export class CcAcpAgent {
     const live = this.sessions.get(sessionId);
     if (live) this.mcpProxy.setClient(sessionId, params.mcpServers);
     const session = live ?? (await this.startSession(sessionId, params.cwd, params.mcpServers, true));
-    await session.drain();
-    if (live) for (const pending of [...live.pendingPermissions.values()]) void pending.ask();
-    return { modes: toAcpModeState(session.host.modes, session.host.mode.current), configOptions: configOptions(session), _meta: { steering: { supported: session.host.steering === true } } };
+    return this.reattach(session, live);
   }
 
   async listSessions(params: acp.ListSessionsRequest): Promise<acp.ListSessionsResponse> {
@@ -173,9 +181,13 @@ export class CcAcpAgent {
     const { sessionId } = params;
     const live = this.sessions.get(sessionId);
     const session = live ?? (await this.startSession(sessionId, params.cwd, params.mcpServers ?? [], true));
+    return this.reattach(session, live);
+  }
+
+  private async reattach(session: Session, live: Session | undefined) {
     await session.drain();
     if (live) for (const pending of [...live.pendingPermissions.values()]) void pending.ask();
-    return { modes: toAcpModeState(session.host.modes, session.host.mode.current), configOptions: configOptions(session), _meta: { steering: { supported: session.host.steering === true } } };
+    return sessionState(session);
   }
 
   async closeSession(params: acp.CloseSessionRequest): Promise<acp.CloseSessionResponse> {
@@ -201,7 +213,7 @@ export class CcAcpAgent {
     const sessionId = randomUUID();
     const session = await this.startSession(sessionId, params.cwd, params.mcpServers ?? [], false, params.sessionId);
     for (const update of await readTranscript(params.sessionId, process.env)) await this.client.sessionUpdate({ sessionId, update });
-    return { sessionId, modes: toAcpModeState(session.host.modes, session.host.mode.current), configOptions: configOptions(session), _meta: { steering: { supported: session.host.steering === true } } };
+    return { sessionId, ...sessionState(session) };;
   }
 
   private async startSession(sessionId: string, cwd: string, clientServers: acp.McpServer[], resume: boolean, forkFrom?: string): Promise<Session> {
@@ -318,31 +330,28 @@ export class CcAcpAgent {
       current: () => host.mode.current,
       pressShiftTab: () => pressShiftTab(host.sessionId),
       waitForChange: async () => {
-        await new Promise((r) => setTimeout(r, KEY_SETTLE_MS));
+        await sleep(KEY_SETTLE_MS);
         const report = host.mode.waitForReport(MODE_REPORT_TIMEOUT_MS);
         await typeCommand(host.sessionId, `/${MODE_PROBE_COMMAND}`);
         const mode = await report;
-        await new Promise((r) => setTimeout(r, PROBE_DRAIN_MS));
+        await sleep(PROBE_DRAIN_MS);
         return mode;
       },
     });
     return {};
   }
 
-  async authenticate(): Promise<void> {}
-
   async prompt(params: acp.PromptRequest, signal?: AbortSignal): Promise<acp.PromptResponse> {
     const session = this.sessions.get(params.sessionId);
     if (!session) throw new Error(`Unknown session ${params.sessionId}`);
     const converted = promptText(params.prompt, session.attachments);
     const text = typeof converted === "string" ? converted : await converted;
-    const result = await new Promise<{ stopReason: acp.StopReason; usage?: acp.Usage }>((resolve, reject) => {
+    return await new Promise<{ stopReason: acp.StopReason; usage?: acp.Usage }>((resolve, reject) => {
       const entry: QueuedPrompt = { text, resolve, reject, cancelRequested: false };
       session.queue.push(entry);
       signal?.addEventListener("abort", () => this.cancelPrompt(session, entry), { once: true });
       this.startNext(session);
     });
-    return result;
   }
 
   async cancel(params: { sessionId: string }): Promise<void> {

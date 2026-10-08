@@ -13,11 +13,7 @@ const EXTENSIONS: Record<string, string> = {
   "image/svg+xml": "svg",
 };
 
-export interface AttachmentDir {
-  ensure(): Promise<string>;
-}
-
-export class SessionAttachments implements AttachmentDir {
+export class SessionAttachments {
   private dir?: string;
 
   constructor(
@@ -27,6 +23,7 @@ export class SessionAttachments implements AttachmentDir {
 
   async ensure(): Promise<string> {
     this.dir ??= join(socketDir(this.env), `${this.sessionId}-attachments`);
+    await mkdir(this.dir, { recursive: true });
     return this.dir;
   }
 
@@ -36,15 +33,14 @@ export class SessionAttachments implements AttachmentDir {
   }
 }
 
-async function saveFile(dir: AttachmentDir, mimeType: string | undefined, bytes: Buffer): Promise<string> {
+async function saveFile(dir: SessionAttachments, mimeType: string | undefined, bytes: Buffer): Promise<string> {
   const base = await dir.ensure();
-  await mkdir(base, { recursive: true });
   const path = join(base, `attachment-${randomUUID()}.${EXTENSIONS[mimeType ?? ""] ?? "bin"}`);
   await writeFile(path, bytes);
   return path;
 }
 
-async function imageText(block: acp.ImageContent, dir: AttachmentDir): Promise<string> {
+async function imageText(block: acp.ImageContent, dir: SessionAttachments): Promise<string> {
   if (block.data) return `[Image attached: ${await saveFile(dir, block.mimeType, Buffer.from(block.data, "base64"))}]`;
   if (block.uri?.startsWith("file:")) return `[Image attached: ${fileURLToPath(block.uri)}]`;
   if (block.uri && /^https?:/.test(block.uri)) {
@@ -56,7 +52,7 @@ async function imageText(block: acp.ImageContent, dir: AttachmentDir): Promise<s
   return `[Image unavailable: ${block.uri ?? "no data"}]`;
 }
 
-async function blockText(block: acp.ContentBlock, dir: AttachmentDir): Promise<string> {
+async function blockText(block: acp.ContentBlock, dir: SessionAttachments): Promise<string> {
   switch (block.type) {
     case "text":
       return block.text;
@@ -74,12 +70,12 @@ async function blockText(block: acp.ContentBlock, dir: AttachmentDir): Promise<s
   }
 }
 
-export function promptText(blocks: acp.ContentBlock[], dir: AttachmentDir): string | Promise<string> {
+export function promptText(blocks: acp.ContentBlock[], dir: SessionAttachments): string | Promise<string> {
   if (blocks.every((b) => b.type === "text")) return blocks.map((b) => (b.type === "text" ? b.text : "")).join("");
   return attachmentsText(blocks, dir);
 }
 
-async function attachmentsText(blocks: acp.ContentBlock[], dir: AttachmentDir): Promise<string> {
+async function attachmentsText(blocks: acp.ContentBlock[], dir: SessionAttachments): Promise<string> {
   let out = "";
   for (const [index, block] of blocks.entries()) {
     const prev = blocks[index - 1];

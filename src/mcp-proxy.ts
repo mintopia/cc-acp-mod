@@ -1,6 +1,7 @@
 import { spawn } from "node:child_process";
 import { createServer, type IncomingMessage, type Server, type ServerResponse } from "node:http";
 import { createInterface } from "node:readline";
+import { text } from "node:stream/consumers";
 import type * as acp from "@agentclientprotocol/sdk";
 
 export const DISCONNECTED_MESSAGE = "Client disconnected: the MCP server is unavailable until a Client attaches to this session";
@@ -36,15 +37,6 @@ function errorResponse(id: JsonRpc["id"], message: string): JsonRpc {
   return { jsonrpc: "2.0", id: id ?? null, error: { code: JSONRPC_SERVER_ERROR, message } };
 }
 
-function readBody(req: IncomingMessage): Promise<string> {
-  return new Promise((resolve, reject) => {
-    const chunks: Buffer[] = [];
-    req.on("data", (c: Buffer) => chunks.push(c));
-    req.on("end", () => resolve(Buffer.concat(chunks).toString("utf8")));
-    req.on("error", reject);
-  });
-}
-
 class Pending {
   private readonly waiting = new Map<number | string, { resolve: (m: JsonRpc) => void; reject: (e: Error) => void }>();
 
@@ -65,12 +57,28 @@ class Pending {
   }
 }
 
-class StdioBridge implements Bridge {
-  private readonly pending = new Pending();
+abstract class BaseBridge implements Bridge {
+  protected readonly pending = new Pending();
+  protected closed?: Error;
+
+  abstract send(message: JsonRpc): Promise<JsonRpc | undefined>;
+  abstract close(reason: Error): void;
+
+  protected fail(err: Error): void {
+    this.closed ??= err;
+    this.pending.rejectAll(this.closed);
+  }
+
+  protected expectReply(message: JsonRpc): Promise<JsonRpc> | undefined {
+    return message.id !== undefined && message.id !== null && message.method ? this.pending.wait(message.id) : undefined;
+  }
+}
+
+class StdioBridge extends BaseBridge {
   private readonly child;
-  private closed?: Error;
 
   constructor(server: acp.McpServerStdio) {
+    super();
     this.child = spawn(server.command, server.args, {
       env: { ...process.env, ...Object.fromEntries(server.env.map((e) => [e.name, e.value])) },
       stdio: ["pipe", "pipe", "ignore"],
@@ -85,14 +93,9 @@ class StdioBridge implements Bridge {
     this.child.stdin.on("error", () => {});
   }
 
-  private fail(err: Error): void {
-    this.closed ??= err;
-    this.pending.rejectAll(this.closed);
-  }
-
   async send(message: JsonRpc): Promise<JsonRpc | undefined> {
     if (this.closed) throw this.closed;
-    const reply = message.id !== undefined && message.id !== null && message.method ? this.pending.wait(message.id) : undefined;
+    const reply = this.expectReply(message);
     this.child.stdin.write(`${JSON.stringify(message)}\n`);
     return reply;
   }
@@ -103,13 +106,12 @@ class StdioBridge implements Bridge {
   }
 }
 
-class SseBridge implements Bridge {
-  private readonly pending = new Pending();
+class SseBridge extends BaseBridge {
   private readonly abort = new AbortController();
   private readonly endpoint: Promise<string>;
-  private closed?: Error;
 
   constructor(private readonly server: acp.McpServerSse) {
+    super();
     let resolveEndpoint!: (url: string) => void;
     let rejectEndpoint!: (err: Error) => void;
     this.endpoint = new Promise((resolve, reject) => {
@@ -154,15 +156,10 @@ class SseBridge implements Bridge {
     throw new Error("SSE MCP server closed its event stream");
   }
 
-  private fail(err: Error): void {
-    this.closed ??= err;
-    this.pending.rejectAll(this.closed);
-  }
-
   async send(message: JsonRpc): Promise<JsonRpc | undefined> {
     const endpoint = await this.endpoint;
     if (this.closed) throw this.closed;
-    const reply = message.id !== undefined && message.id !== null && message.method ? this.pending.wait(message.id) : undefined;
+    const reply = this.expectReply(message);
     const res = await fetch(endpoint, {
       method: "POST",
       headers: { ...headerMap(this.server.headers), "content-type": "application/json" },
@@ -250,7 +247,7 @@ export class McpProxy {
   }
 
   private async forward(endpoint: Endpoint, req: IncomingMessage, res: ServerResponse): Promise<void> {
-    const body = req.method === "POST" ? await readBody(req) : undefined;
+    const body = req.method === "POST" ? await text(req) : undefined;
     const message = body ? (JSON.parse(body) as JsonRpc) : undefined;
     const upstream = endpoint.upstream;
     if (!upstream) return void replyDetached(res, message);

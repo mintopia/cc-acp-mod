@@ -22,7 +22,7 @@ const PNG = Buffer.from("png-bytes");
 test("images are saved to a session dir, resources inlined, caps advertised, files cleaned on close", async () => {
   const h = harness();
   const init = await h.agent.initialize({ protocolVersion: 1 } as never);
-  expect(init.agentCapabilities?.promptCapabilities?.image).toBe(true);
+  expect(init.agentCapabilities?.promptCapabilities).toEqual({ image: true, embeddedContext: true });
   const { sessionId } = await h.agent.newSession({ cwd: "/tmp", mcpServers: [] });
   void h.agent.prompt({
     sessionId,

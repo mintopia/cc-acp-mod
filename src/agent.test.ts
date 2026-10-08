@@ -50,6 +50,14 @@ test("session/cancel aborts the running turn and the prompt resolves cancelled",
   expect(await p).toEqual({ stopReason: "cancelled" });
 });
 
+test("turn_completed max_tokens resolves the prompt with stopReason max_tokens", async () => {
+  const h = harness();
+  const { sessionId } = await h.agent.newSession({ cwd: "/", mcpServers: [] });
+  const p = h.agent.prompt(promptOf(sessionId, "a"));
+  h.emit({ type: "turn_completed", reason: "max_tokens" });
+  expect(await p).toEqual({ stopReason: "max_tokens" });
+});
+
 test("cancel resolves cancelled even if the turn completed with an answer first", async () => {
   const h = harness();
   const { sessionId } = await h.agent.newSession({ cwd: "/", mcpServers: [] });

@@ -52,6 +52,7 @@ let probeFile: string | undefined
 let idleMs = DEFAULT_IDLE_MS
 let unownedSince: number | undefined
 let turnActive = false
+let hitMaxTokens = false
 
 async function post($: any, path: string, body: unknown) {
   const res = await $.http.fetch(`http://adapter${path}`, {
@@ -369,7 +370,10 @@ export const register: Register = (on) => {
   })
 
   on('turn.start', async ($, e, next) => {
-    if ((e as { agentId?: string }).agentId === undefined) turnActive = true
+    if ((e as { agentId?: string }).agentId === undefined) {
+      turnActive = true
+      hitMaxTokens = false
+    }
     void reportModel($)
     emit($, { type: 'turn_started', turnId: e.turnId })
     return next(e)
@@ -377,6 +381,7 @@ export const register: Register = (on) => {
 
   on('turn.step', async function* ($, e, next) {
     for await (const chunk of next(e)) {
+      if (chunk.kind === 'stop' && e.agentId === undefined) hitMaxTokens = chunk.stopReason === 'max_tokens'
       if ((chunk.kind === 'text' || chunk.kind === 'thinking') && e.agentId === undefined) {
         emit($, { type: 'chunk', kind: chunk.kind, text: chunk.text })
       }
@@ -431,7 +436,7 @@ export const register: Register = (on) => {
       turnActive = false
       await reportUsage($, e)
       await reportTitle($)
-      emit($, { type: 'turn_completed', reason: e.reason })
+      emit($, { type: 'turn_completed', reason: e.reason === 'answer' && hitMaxTokens ? 'max_tokens' : e.reason })
     }
     void reportModel($)
     void reportCommands($)

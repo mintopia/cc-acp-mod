@@ -1,9 +1,24 @@
 import { chmod, mkdir, rm, stat } from "node:fs/promises";
 import { createServer, type IncomingMessage, type Server, type ServerResponse } from "node:http";
 import { dirname } from "node:path";
+import { json } from "node:stream/consumers";
 import { POLL_WINDOW_MS, type Command, type Hello, type ModEvent, type PermissionDecision } from "./protocol.js";
 
 const OWNERSHIP_CHECK_MS = 500;
+
+export function waitFor<T>(waiters: Array<(value: T) => void>, timeoutMs: number, onTimeout: T): Promise<T> {
+  return new Promise((resolve) => {
+    const done = (value: T) => {
+      clearTimeout(timer);
+      resolve(value);
+    };
+    const timer = setTimeout(() => {
+      waiters.splice(waiters.indexOf(done), 1);
+      resolve(onTimeout);
+    }, timeoutMs);
+    waiters.push(done);
+  });
+}
 
 type Waiter = { resolve: (cmd: Command | null) => void; timer: NodeJS.Timeout };
 
@@ -12,7 +27,7 @@ export class SessionChannel {
   private helloResolve!: (hello: Hello) => void;
   private helloPromise: Promise<Hello>;
   private turnActive = false;
-  private idleWaiters: Array<() => void> = [];
+  private readonly idleWaiters: Array<(idle: boolean) => void> = [];
   private readonly commands: Command[] = [];
   private waiter?: Waiter;
   private readonly answers = new Map<string, PermissionDecision>();
@@ -25,7 +40,7 @@ export class SessionChannel {
   private helloed = false;
   private buffered = 0;
   private received = 0;
-  private bufferedWaiters: Array<() => void> = [];
+  private readonly bufferedWaiters: Array<(value: void) => void> = [];
 
   constructor(readonly path: string, private readonly pollWindowMs = POLL_WINDOW_MS) {
     this.helloPromise = new Promise((resolve) => (this.helloResolve = resolve));
@@ -38,24 +53,14 @@ export class SessionChannel {
 
   waitForIdle(timeoutMs: number): Promise<boolean> {
     if (!this.turnActive) return Promise.resolve(true);
-    return new Promise((resolve) => {
-      const done = () => {
-        clearTimeout(timer);
-        resolve(!this.turnActive);
-      };
-      const timer = setTimeout(() => {
-        this.idleWaiters = this.idleWaiters.filter((w) => w !== done);
-        resolve(false);
-      }, timeoutMs);
-      this.idleWaiters.push(done);
-    });
+    return waitFor(this.idleWaiters, timeoutMs, false);
   }
 
   private trackTurn(event: ModEvent): void {
     if (event.type === "turn_started") this.turnActive = true;
     if (event.type !== "turn_completed") return;
     this.turnActive = false;
-    for (const done of this.idleWaiters.splice(0)) done();
+    for (const done of this.idleWaiters.splice(0)) done(true);
   }
 
   async listen(): Promise<void> {
@@ -82,14 +87,7 @@ export class SessionChannel {
 
   waitForBuffered(timeoutMs: number): Promise<void> {
     if (this.received >= this.buffered) return Promise.resolve();
-    return new Promise((resolve) => {
-      const done = () => {
-        clearTimeout(timer);
-        resolve();
-      };
-      const timer = setTimeout(done, timeoutMs);
-      this.bufferedWaiters.push(done);
-    });
+    return waitFor(this.bufferedWaiters, timeoutMs, undefined);
   }
 
   private countEvents(n: number): void {
@@ -137,7 +135,7 @@ export class SessionChannel {
     clearInterval(this.watcher);
     for (const done of this.bufferedWaiters.splice(0)) done();
     this.turnActive = false;
-    for (const done of this.idleWaiters.splice(0)) done();
+    for (const done of this.idleWaiters.splice(0)) done(true);
     for (const { resolve, timer } of this.answerWaiters.values()) {
       clearTimeout(timer);
       resolve(null);
@@ -159,9 +157,9 @@ export class SessionChannel {
     try {
       if (!this.helloed && req.url !== "/hello") return reply(res, 409);
       if (req.method === "POST" && req.url === "/hello") {
-        const hello = await readJson<Hello>(req);
+        const hello = await json(req) as Hello;
         this.turnActive = hello.busy === true;
-        if (!this.turnActive) for (const done of this.idleWaiters.splice(0)) done();
+        if (!this.turnActive) for (const done of this.idleWaiters.splice(0)) done(true);
         this.buffered = hello.buffered ?? 0;
         this.received = 0;
         this.helloed = true;
@@ -169,7 +167,7 @@ export class SessionChannel {
         return reply(res, 204);
       }
       if (req.method === "POST" && req.url === "/events") {
-        const { events } = await readJson<{ events: ModEvent[] }>(req);
+        const { events } = await json(req) as { events: ModEvent[] };
         for (const event of events) {
           this.trackTurn(event);
           this.onEvent(event);
@@ -233,10 +231,4 @@ function reply(res: ServerResponse, status: number, body?: unknown): void {
   } else {
     res.writeHead(status, { "content-type": "application/json" }).end(JSON.stringify(body));
   }
-}
-
-async function readJson<T>(req: IncomingMessage): Promise<T> {
-  const chunks: Buffer[] = [];
-  for await (const chunk of req) chunks.push(chunk as Buffer);
-  return JSON.parse(Buffer.concat(chunks).toString("utf8")) as T;
 }

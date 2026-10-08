@@ -1,4 +1,5 @@
 import { request } from "node:http";
+import { setTimeout as sleep } from "node:timers/promises";
 import { PROTOCOL_VERSION, type Command, type Hello, type ModEvent } from "../protocol.js";
 
 export class FakeMod {
@@ -49,7 +50,7 @@ export class FakeMod {
           for (const w of this.waiters.splice(0)) w();
         }
       } catch {
-        if (!this.stopped) await new Promise((r) => setTimeout(r, 10));
+        if (!this.stopped) await sleep(10);
       }
     }
   }

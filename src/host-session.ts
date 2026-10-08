@@ -1,6 +1,7 @@
 import { dirname, join } from "node:path";
 import { fileURLToPath } from "node:url";
-import { SessionChannel } from "./channel.js";
+import { setTimeout as sleep } from "node:timers/promises";
+import { SessionChannel, waitFor } from "./channel.js";
 import type { HostMcpServer } from "./mcp-proxy.js";
 import { checkClaudeVersion, checkTmux, trustDirectory } from "./launch.js";
 import { socketDir, socketPath } from "./paths.js";
@@ -19,7 +20,7 @@ const BUFFERED_DRAIN_TIMEOUT_MS = 5_000;
 const SKEW_IDLE_TIMEOUT_MS = 30_000;
 
 export class ModeTracker {
-  private waiters: Array<(mode: string) => void> = [];
+  private readonly waiters: Array<(mode: string | undefined) => void> = [];
   constructor(public current: string) {}
 
   update(mode: string): boolean {
@@ -30,17 +31,7 @@ export class ModeTracker {
   }
 
   waitForReport(timeoutMs: number): Promise<string | undefined> {
-    return new Promise((resolve) => {
-      const timer = setTimeout(() => {
-        this.waiters = this.waiters.filter((w) => w !== done);
-        resolve(undefined);
-      }, timeoutMs);
-      const done = (mode: string) => {
-        clearTimeout(timer);
-        resolve(mode);
-      };
-      this.waiters.push(done);
-    });
+    return waitFor(this.waiters, timeoutMs, undefined);
   }
 }
 
@@ -123,11 +114,6 @@ export async function launchHostSession(opts: {
   return { sessionId: opts.sessionId, channel, steering: hello.steering === true, modes, mode };
 }
 
-export async function stopHostSession(host: HostSession): Promise<void> {
-  await killSession(host.sessionId);
-  await host.channel.close();
-}
-
 export function sessionArgs(opts: { sessionId: string; resume?: boolean; forkFrom?: string }): string[] {
   if (opts.forkFrom) return ["--resume", opts.forkFrom, "--fork-session", "--session-id", opts.sessionId];
   return [opts.resume ? "--resume" : "--session-id", opts.sessionId];
@@ -156,7 +142,7 @@ export async function switchModel(
   let done = false;
   void changed.then(() => (done = true));
   while (!done && Date.now() < deadline) {
-    await new Promise((r) => setTimeout(r, CONFIRM_AFTER_MS));
+    await sleep(CONFIRM_AFTER_MS);
     if (!done) await sendEnter(host.sessionId).catch(() => {});
   }
   if (!done) throw new Error(`Model did not switch to ${id}`);
