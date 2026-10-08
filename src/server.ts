@@ -21,6 +21,7 @@ export function serveAgent(stream: acp.Stream, version: string, launch: HostLaun
     .onRequest(AGENT_METHODS.initialize, (ctx) => agent!.initialize(ctx.params))
     .onRequest(AGENT_METHODS.session_new, (ctx) => agent!.newSession(ctx.params))
     .onRequest(AGENT_METHODS.session_load, (ctx) => agent!.loadSession(ctx.params))
+    .onRequest(AGENT_METHODS.session_fork, (ctx) => agent!.forkSession(ctx.params))
     .onRequest(AGENT_METHODS.authenticate, async () => (await agent!.authenticate(), {}))
     .onRequest(AGENT_METHODS.session_prompt, (ctx) => agent!.prompt(ctx.params, ctx.signal))
     .onRequest("_session/steering", (params) => params as Parameters<CcAcpAgent["steer"]>[0], (ctx) => agent!.steer(ctx.params))

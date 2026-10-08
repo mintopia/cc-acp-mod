@@ -22,6 +22,7 @@ export type HostLauncher = (opts: {
   disallowedTools?: string[];
   mcpServers?: Record<string, HostMcpServer>;
   resume?: boolean;
+  forkFrom?: string;
   onEvent: (event: ModEvent) => void;
 }) => Promise<Pick<HostSession, "sessionId"> & { steering?: boolean; channel: Pick<HostSession["channel"], "send" | "close"> }>;
 
@@ -136,7 +137,7 @@ export class CcAcpAgent {
       protocolVersion: acp.PROTOCOL_VERSION,
       authMethods: authMethods as acp.InitializeResponse["authMethods"],
       agentInfo: { name: "cc-acp", title: "Claude Code (cc-acp)", version: this.version },
-      agentCapabilities: { loadSession: true, promptCapabilities: { image: true }, mcpCapabilities: { http: true, sse: true } },
+      agentCapabilities: { loadSession: true, sessionCapabilities: { fork: {} }, promptCapabilities: { image: true }, mcpCapabilities: { http: true, sse: true } },
     };
   }
 
@@ -153,7 +154,14 @@ export class CcAcpAgent {
     return { modes: modeState(), configOptions: configOptions(session), _meta: { steering: { supported: session.host.steering === true } } };
   }
 
-  private async startSession(sessionId: string, cwd: string, clientServers: acp.McpServer[], resume: boolean): Promise<Session> {
+  async forkSession(params: acp.ForkSessionRequest): Promise<acp.ForkSessionResponse> {
+    const sessionId = randomUUID();
+    const session = await this.startSession(sessionId, params.cwd, params.mcpServers ?? [], false, params.sessionId);
+    for (const update of await readTranscript(params.sessionId, process.env)) await this.client.sessionUpdate({ sessionId, update });
+    return { sessionId, modes: modeState(), configOptions: configOptions(session), _meta: { steering: { supported: session.host.steering === true } } };
+  }
+
+  private async startSession(sessionId: string, cwd: string, clientServers: acp.McpServer[], resume: boolean, forkFrom?: string): Promise<Session> {
     const env = process.env;
     let events: Promise<void> = Promise.resolve();
     const pendingCommands = new Map<string, SlashCommand[]>();
@@ -166,6 +174,7 @@ export class CcAcpAgent {
       env,
       mcpServers,
       resume,
+      forkFrom,
       disallowedTools: this.formElicitation ? [] : ["AskUserQuestion"],
       onEvent: (event) => {
         if (event.type === "ask_question") return void this.askQuestion(sessionId, event);
