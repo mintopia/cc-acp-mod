@@ -16,6 +16,32 @@ An [Agent Client Protocol](https://agentclientprotocol.com) (ACP) agent for Clau
 - Slash command list, plan, context usage and session title updates sent to the Client.
 - Reattach to a still-running Host Session, or Revive one from its saved transcript.
 
+## Comparison with the Reference Adapter
+
+cc-acp next to the Reference Adapter, `@agentclientprotocol/claude-agent-acp` 0.87.0.
+
+| Feature | `@agentclientprotocol/claude-agent-acp` | cc-acp |
+| --- | --- | --- |
+| How Claude runs | Claude Agent SDK | Real interactive `claude` in tmux |
+| Platform | Node.js | Linux and macOS with tmux; Windows needs WSL |
+| Login | Terminal login, plus gateway auth and `logout` | Terminal login only (subscription or Console) |
+| Sessions | New, load, resume, fork, list, close, delete | Same |
+| `additionalDirectories` | ✓ | ✓ |
+| Permission modes | Default, Accept Edits, Plan, Auto, Bypass; `dontAsk` accepted as a default | Default, Accept Edits, Plan, Auto, Bypass |
+| Model and effort | Switched live through the SDK | Config options. A model change runs `/model` in the session and confirms its dialog |
+| Slash commands | ✓, plus `/mcp` reconnect, enable and disable | ✓ Command list sent to the Client |
+| Client MCP servers | stdio, HTTP, SSE, passed to the SDK | stdio, HTTP, SSE, through an Adapter-owned proxy that survives Reattach |
+| Permission requests | ✓ | ✓ |
+| Terminals | Tool call terminal output | Bash output as a terminal |
+| Images and embedded context | ✓ | ✓ |
+| Plans and TODOs | ✓ | ✓ |
+| Stop reasons | `end_turn`, `max_tokens`, `max_turn_requests`, `refusal`, `cancelled` | `end_turn`, `max_tokens`, `refusal`, `cancelled` |
+| Steering | ✓ `_session/steering` | ✓ `_session/steering`, when the session supports it |
+| Cancellation | ✓ | ✓ |
+| Settings | Loaded from user, project and local settings | Claude Code reads its own settings files |
+| Mod | None | Bundled. Reports session events and installs nothing in `~/.claude` |
+| AIR extensions and native subagent sessions | ✓ | ✗ |
+
 ## Requirements
 
 - Node.js 20+
