@@ -38,7 +38,7 @@ class AdapterClient {
     } else if (msg.id !== undefined) {
       const p = this.pending.get(msg.id);
       this.pending.delete(msg.id);
-      if (msg.error) p.reject(new Error(`${msg.error.message}`));
+      if (msg.error) p.reject(new Error(`${msg.error.message}${msg.error.data ? ` ${JSON.stringify(msg.error.data)}` : ""}`));
       else p.resolve(msg.result);
     }
   }
