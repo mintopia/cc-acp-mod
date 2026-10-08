@@ -55,3 +55,14 @@ test("attachments from separate prompts in one session never share a path", asyn
   expect(readFileSync(paths[0]!, "utf8")).toBe("first");
   await h.agent.close();
 });
+
+test("a text prompt sent after an image prompt queues behind it", async () => {
+  const h = harness();
+  const { sessionId } = await h.agent.newSession({ cwd: "/tmp", mcpServers: [] });
+  void h.agent.prompt({ sessionId, prompt: [{ type: "image", data: Buffer.from("png").toString("base64"), mimeType: "image/png" }] });
+  void h.agent.prompt({ sessionId, prompt: [{ type: "text", text: "after" }] });
+  await new Promise((r) => setTimeout(r, 20));
+  const first = h.sent.find((c) => c.type === "prompt") as { text: string };
+  expect(first.text).toMatch(/\[Image attached: /);
+  await h.agent.close();
+});
