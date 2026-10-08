@@ -10,6 +10,7 @@ const DEFAULT_IDLE_MS = 3_600_000
 const MAX_REAP_CHECK_MS = 60_000
 const TMUX_SOCKET = 'cc-acp'
 const COMMAND_TURN_WAIT_MS = 2_000
+const PANEL_WAIT_MS = 3_000
 
 type Event =
   | { type: 'turn_started'; turnId: string }
@@ -50,6 +51,8 @@ let probing = false
 let probeCount = 0
 let probeCommand: string | undefined
 let turnsStarted = 0
+let compactions = 0
+let pendingCommand: ((reply: string | undefined, reason?: string) => void) | undefined
 let probeFile: string | undefined
 let idleMs = DEFAULT_IDLE_MS
 let unownedSince: number | undefined
@@ -213,17 +216,31 @@ function submitPrompt($: any, text: string) {
     return
   }
   const before = turnsStarted
-  const answer = (reply: string | undefined) => {
+  const compactionsBefore = compactions
+  let settled = false
+  const finish = (reply: string | undefined, reason = 'answer') => {
+    if (settled) return
+    settled = true
+    if (pendingCommand === finish) pendingCommand = undefined
     if (turnsStarted !== before) return
     if (reply) emit($, { type: 'chunk', kind: 'text', text: reply })
-    emit($, { type: 'turn_completed', reason: 'answer' })
+    emit($, { type: 'turn_completed', reason })
   }
+  pendingCommand = finish
+  $.clock.after(PANEL_WAIT_MS, async () => {
+    if (settled || turnsStarted !== before || compactions !== compactionsBefore) return
+    try {
+      const sessionId = await $.session.id()
+      await $.process.run(['tmux', '-L', TMUX_SOCKET, 'send-keys', '-t', `cc-acp-${sessionId}`, 'Escape'])
+    } catch {}
+    finish(`/${slash[1]} opens an interactive panel, which this Client can't show.`)
+  })
   void $.command.run({ command: slash[1], args: slash[2] ?? '' }).then(
     (result: { text?: string } | undefined) => {
-      if (result?.text !== undefined) answer(result.text)
-      else $.clock.after(COMMAND_TURN_WAIT_MS, () => answer(undefined))
+      if (result?.text !== undefined) finish(result.text)
+      else $.clock.after(COMMAND_TURN_WAIT_MS, () => finish(undefined))
     },
-    (error: unknown) => answer(error instanceof Error ? error.message : String(error)),
+    (error: unknown) => finish(error instanceof Error ? error.message : String(error)),
   )
 }
 
@@ -239,6 +256,7 @@ function runCommand(
     pendingQuestions.get(command.requestId)?.(command.answers ?? null)
     pendingQuestions.delete(command.requestId)
   } else if (command.type === 'cancel') {
+    pendingCommand?.(undefined, 'aborted')
     void $.turn.abort().catch(() => {})
   } else if (command.type === 'set_model' && command.id !== undefined) {
     void $.command
@@ -389,6 +407,11 @@ export const register: Register = (on) => {
 
   on('classic.Stop', async ($, e, next) => {
     reportMode($, e)
+    return next(e)
+  })
+
+  on('session.compact', async ($, e, next) => {
+    compactions++
     return next(e)
   })
 

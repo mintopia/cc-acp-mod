@@ -48,6 +48,12 @@ export function initialModelId(env: NodeJS.ProcessEnv): string {
   return env.ANTHROPIC_MODEL || BUILT_IN_MODELS[0]!.id;
 }
 
+export function resolveModelId(models: ModelInfo[], requested: string): string | undefined {
+  if (models.some((m) => m.id === requested)) return requested;
+  const words = requested.toLowerCase().split(/[^a-z0-9]+/);
+  return models.find((m) => m.id !== "default" && words.includes(m.id.toLowerCase()))?.id;
+}
+
 function isRecord(v: unknown): v is Record<string, unknown> {
   return typeof v === "object" && v !== null && !Array.isArray(v);
 }

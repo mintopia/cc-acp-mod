@@ -11,9 +11,11 @@ async function setup(promptText: string, run: (req: { command: string; args: str
   const events: any[] = [];
   const runCalls: Array<{ command: string; args: string }> = [];
   const submitted: Array<{ text: string }> = [];
+  const processCalls: string[][] = [];
   const timers: Array<{ at: number; fn: () => void }> = [];
   let now = 0;
   let polled = false;
+  let nextPoll: ((r: { status: number; text: string }) => void) | undefined;
   const $ = {
     session: { id: async () => "sess1", model: async () => "m", messages: async () => [], usage: async () => ({ context: {} }) },
     command: {
@@ -31,6 +33,7 @@ async function setup(promptText: string, run: (req: { command: string; args: str
         if (submitError) throw submitError;
       },
     },
+    turn: { abort: async () => {} },
     state: { get: async () => ({ value: undefined }), set: async () => {} },
     http: {
       fetch: async (url: string, init?: { body?: string }) => {
@@ -40,7 +43,7 @@ async function setup(promptText: string, run: (req: { command: string; args: str
           return { status: 200, text: "{}" };
         }
         if (path === "/poll") {
-          if (polled) return new Promise(() => {});
+          if (polled) return new Promise((resolve) => (nextPoll = resolve));
           polled = true;
           return { status: 200, text: JSON.stringify({ type: "prompt", text: promptText }) };
         }
@@ -49,6 +52,7 @@ async function setup(promptText: string, run: (req: { command: string; args: str
     },
     process: {
       run: async (argv: string[]) => {
+        processCalls.push(argv);
         const env: Record<string, string> = { CC_ACP_SOCKET_DIR: "/tmp/s", CC_ACP_IDLE_TIMEOUT_MS: "0" };
         return { stdout: argv[0] === "printenv" ? (env[argv[1]] ?? "") : "" };
       },
@@ -76,7 +80,8 @@ async function setup(promptText: string, run: (req: { command: string; args: str
   await advance(0);
   const completions = () => events.filter((e) => e.type === "turn_completed");
   const chunks = () => events.filter((e) => e.type === "chunk");
-  return { $, handlers, events, runCalls, submitted, advance, completions, chunks };
+  const sendCommand = (cmd: unknown) => nextPoll?.({ status: 200, text: JSON.stringify(cmd) });
+  return { sendCommand, $, handlers, events, runCalls, submitted, processCalls, advance, completions, chunks };
 }
 
 describe("slash prompts", () => {
@@ -166,5 +171,48 @@ describe("slash prompts", () => {
       throw "nope";
     });
     expect(t.chunks()).toEqual([{ type: "chunk", kind: "text", text: "nope" }]);
+  });
+
+  it("dismisses a panel command after 3s and replies that it cannot be shown", async () => {
+    const t = await setup("/release-notes", () => new Promise(() => {}));
+    await t.advance(2900);
+    expect(t.completions()).toEqual([]);
+    await t.advance(200);
+    expect(t.processCalls).toContainEqual(["tmux", "-L", "cc-acp", "send-keys", "-t", "cc-acp-sess1", "Escape"]);
+    expect(t.chunks()).toEqual([{ type: "chunk", kind: "text", text: "/release-notes opens an interactive panel, which this Client can't show." }]);
+    expect(t.completions()).toEqual([{ type: "turn_completed", reason: "answer" }]);
+  });
+
+  it("does not dismiss when the command resolves or a turn starts in time", async () => {
+    const t = await setup("/implement 28", async () => ({}));
+    await t.advance(5000);
+    expect(t.processCalls.some((a) => a.includes("send-keys"))).toBe(false);
+    expect(t.completions()).toHaveLength(1);
+    const u = await setup("/skill", () => new Promise(() => {}));
+    await u.handlers.get("turn.start")!(u.$, { turnId: "t1" }, async (e: any) => e);
+    await u.advance(5000);
+    expect(u.processCalls.some((a) => a.includes("send-keys"))).toBe(false);
+    expect(u.completions()).toEqual([]);
+  });
+
+  it("does not dismiss a command that is compacting the conversation", async () => {
+    let resolve!: (r: { text?: string }) => void;
+    const t = await setup("/compact", () => new Promise((r) => (resolve = r)));
+    await t.handlers.get("session.compact")!(t.$, { trigger: "manual" }, async (e: any) => e);
+    await t.advance(5000);
+    expect(t.processCalls.some((a) => a.includes("send-keys"))).toBe(false);
+    expect(t.completions()).toEqual([]);
+    resolve({ text: "Compacted" });
+    await t.advance(0);
+    expect(t.completions()).toEqual([{ type: "turn_completed", reason: "answer" }]);
+  });
+
+  it("completes an unresolved command as aborted on cancel", async () => {
+    const t = await setup("/release-notes", () => new Promise(() => {}));
+    t.sendCommand({ type: "cancel" });
+    await t.advance(0);
+    expect(t.completions()).toEqual([{ type: "turn_completed", reason: "aborted" }]);
+    await t.advance(5000);
+    expect(t.completions()).toHaveLength(1);
   });
 });

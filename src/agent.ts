@@ -5,7 +5,7 @@ import { claudeLoggedIn, terminalAuthMethods } from "./auth.js";
 import { formAnswers, questionForm } from "./ask-user-question.js";
 import { McpProxy, type HostMcpServer } from "./mcp-proxy.js";
 import { launchHostSession, switchModel, MODE_PROBE_COMMAND, type HostSession, type ModeTracker } from "./host-session.js";
-import { MODEL_CONFIG_ID, buildModelList, initialModelId, type ModelInfo } from "./models.js";
+import { MODEL_CONFIG_ID, buildModelList, initialModelId, resolveModelId, type ModelInfo } from "./models.js";
 import { switchMode, toAcpModeState } from "./modes.js";
 import { SessionAttachments, promptText } from "./prompt-content.js";
 import { TaskPlan, bashOutput, diffContent, planEntries, toolInfo } from "./tool-mapping.js";
@@ -280,15 +280,27 @@ export class CcAcpAgent {
     if (params.configId !== MODEL_CONFIG_ID) throw new Error(`Unknown config option ${params.configId}`);
     const id = String(params.value);
     if (!session.models.some((m) => m.id === id)) throw new Error(`Unknown model ${id}`);
-    if (id !== session.currentModel) {
-      const changed = new Promise<void>((resolve) => session.modelWaiters.set(id, resolve));
-      try {
-        await switchModel(session.host, id, changed);
-      } finally {
-        session.modelWaiters.delete(id);
-      }
-    }
+    await this.applyModel(session, id);
     return { configOptions: configOptions(session) };
+  }
+
+  async setSessionModel(params: { sessionId: string; modelId: string }): Promise<Record<string, never>> {
+    const session = this.sessions.get(params.sessionId);
+    if (!session) throw acp.RequestError.invalidParams(undefined, `Unknown session ${params.sessionId}`);
+    const id = resolveModelId(session.models, params.modelId);
+    if (!id) throw acp.RequestError.invalidParams(undefined, `Unknown model ${params.modelId}`);
+    await this.applyModel(session, id);
+    return {};
+  }
+
+  private async applyModel(session: Session, id: string): Promise<void> {
+    if (id === session.currentModel) return;
+    const changed = new Promise<void>((resolve) => session.modelWaiters.set(id, resolve));
+    try {
+      await switchModel(session.host, id, changed);
+    } finally {
+      session.modelWaiters.delete(id);
+    }
   }
 
   private async setEffortOrFast(session: Session, option: "effort" | "fast", value: string): Promise<void> {

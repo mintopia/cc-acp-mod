@@ -28,7 +28,7 @@ cc-acp next to the Reference Adapter, `@agentclientprotocol/claude-agent-acp` 0.
 | Sessions | New, load, resume, fork, list, close, delete | Same |
 | `additionalDirectories` | ✓ | ✓ |
 | Permission modes | Default, Accept Edits, Plan, Auto, Bypass; `dontAsk` accepted as a default | Default, Accept Edits, Plan, Auto, Bypass |
-| Model and effort | Switched live through the SDK | Config options. A model change runs `/model` in the session and confirms its dialog |
+| Model and effort | Switched live through the SDK | Config options and `session/set_model` (full ids like `claude-sonnet-5-5` map to the matching alias). A model change runs `/model` in the session and confirms its dialog |
 | Slash commands | ✓, plus `/mcp` reconnect, enable and disable | ✓ Command list sent to the Client |
 | Client MCP servers | stdio, HTTP, SSE, passed to the SDK | stdio, HTTP, SSE, through an Adapter-owned proxy that survives Reattach |
 | Permission requests | ✓ | ✓ |
@@ -105,7 +105,7 @@ Client <--ACP/stdio--> Adapter <--tmux keystrokes--> Host Session (claude)
 
 - cc-acp runs on Linux and macOS. On Windows it needs WSL.
 - Changing the model mid-session with `/model` opens a "Switch model?" confirmation dialog in Claude Code, and Claude Code saves the choice as your default model in `~/.claude/settings.json`. See "Spike findings" item 6 in `openspec/changes/add-cc-acp-adapter/design.md`.
-- A prompt that starts with a slash command runs that command. Commands that open a panel in Claude Code, such as `/release-notes`, never return, so the prompt never finishes.
+- A prompt that starts with a command that opens a panel in Claude Code, such as `/release-notes`, can't be shown to the Client. After 3 seconds the Mod closes the panel and replies that it opens an interactive panel.
 
 ## Development
 
@@ -141,3 +141,25 @@ See `GLOSSARY.md` for the terms used here and `docs/adr/` for the design decisio
 ## License
 
 [MIT](LICENSE)
+
+MIT License
+
+Copyright (c) 2026 Jessica Smith
+
+Permission is hereby granted, free of charge, to any person obtaining a copy
+of this software and associated documentation files (the "Software"), to deal
+in the Software without restriction, including without limitation the rights
+to use, copy, modify, merge, publish, distribute, sublicense, and/or sell
+copies of the Software, and to permit persons to whom the Software is
+furnished to do so, subject to the following conditions:
+
+The above copyright notice and this permission notice shall be included in all
+copies or substantial portions of the Software.
+
+THE SOFTWARE IS PROVIDED "AS IS", WITHOUT WARRANTY OF ANY KIND, EXPRESS OR
+IMPLIED, INCLUDING BUT NOT LIMITED TO THE WARRANTIES OF MERCHANTABILITY,
+FITNESS FOR A PARTICULAR PURPOSE AND NONINFRINGEMENT. IN NO EVENT SHALL THE
+AUTHORS OR COPYRIGHT HOLDERS BE LIABLE FOR ANY CLAIM, DAMAGES OR OTHER
+LIABILITY, WHETHER IN AN ACTION OF CONTRACT, TORT OR OTHERWISE, ARISING FROM,
+OUT OF OR IN CONNECTION WITH THE SOFTWARE OR THE USE OR OTHER DEALINGS IN THE
+SOFTWARE.

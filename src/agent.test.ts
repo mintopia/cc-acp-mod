@@ -222,6 +222,21 @@ test("effort and fast config options are offered, applied via the Host Session a
   await expect(agent.setSessionConfigOption({ sessionId, configId: "effort", value: "bogus" })).rejects.toThrow();
 });
 
+test("session/set_model is a no-op for the current model and rejects unknown models with invalid params", async () => {
+  const sent: Command[] = [];
+  const launch: HostLauncher = async ({ sessionId }) => ({
+    sessionId,
+    ...hostModes(),
+    channel: { send: (c) => void sent.push(c), close: async () => {} },
+  });
+  const agent = new CcAcpAgent({ sessionUpdate: async () => {} }, "0", launch);
+  const { sessionId } = await agent.newSession({ cwd: "/", mcpServers: [] });
+  expect(await agent.setSessionModel({ sessionId, modelId: "default" })).toEqual({});
+  expect(sent).toEqual([]);
+  await expect(agent.setSessionModel({ sessionId, modelId: "gpt-5" })).rejects.toMatchObject({ code: -32602 });
+  await expect(agent.setSessionModel({ sessionId: "nope", modelId: "sonnet" })).rejects.toMatchObject({ code: -32602 });
+});
+
 function elicitHarness(opts: { form: boolean; respond?: (p: any) => any }) {
   const sent: Command[] = [];
   const launched: { disallowedTools?: string[] }[] = [];

@@ -1,5 +1,5 @@
 import { expect, test } from "vitest";
-import { buildModelList, initialModelId, parseModelConfig } from "./models.js";
+import { buildModelList, initialModelId, parseModelConfig, resolveModelId } from "./models.js";
 
 test("built-in catalogue is used when nothing is configured", () => {
   const ids = buildModelList({}).map((m) => m.id);
@@ -39,4 +39,13 @@ test("additionalDirectories become one --add-dir per path", async () => {
   const { addDirArgs } = await import("./host-session.js");
   expect(addDirArgs(undefined)).toEqual([]);
   expect(addDirArgs(["/a", "/b"])).toEqual(["--add-dir", "/a", "--add-dir", "/b"]);
+});
+
+test("resolveModelId matches exact ids and maps full model names to their alias", () => {
+  const models = buildModelList({});
+  expect(resolveModelId(models, "sonnet")).toBe("sonnet");
+  expect(resolveModelId(models, "claude-sonnet-5-5")).toBe("sonnet");
+  expect(resolveModelId(models, "claude-opus-5-5")).toBe("opus");
+  expect(resolveModelId(models, "gpt-5")).toBeUndefined();
+  expect(resolveModelId(models, "claude-default-1")).toBeUndefined();
 });
