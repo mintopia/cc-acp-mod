@@ -103,7 +103,6 @@ class StdioBridge implements Bridge {
   }
 }
 
-/** Legacy HTTP+SSE transport: a long-lived GET stream carries responses, an announced endpoint receives POSTs. */
 class SseBridge implements Bridge {
   private readonly pending = new Pending();
   private readonly abort = new AbortController();
@@ -184,7 +183,6 @@ class SseBridge implements Bridge {
   }
 }
 
-/** One loopback HTTP server fronting every Client MCP server of every Host Session, so the Host Session's MCP config never has to change. */
 export class McpProxy {
   private server?: Server;
   private port = 0;
@@ -200,7 +198,6 @@ export class McpProxy {
     this.port = (this.server.address() as { port: number }).port;
   }
 
-  /** Registers the session's server names and returns the config the Host Session should be launched with. */
   register(sessionId: string, names: string[]): Record<string, HostMcpServer> {
     const config: Record<string, HostMcpServer> = {};
     for (const name of names) {
@@ -210,8 +207,11 @@ export class McpProxy {
     return config;
   }
 
-  /** Points registered endpoints at the servers the attached Client supplied; null marks the session detached. */
-  setClient(sessionId: string, servers: acp.McpServer[] | null): void {
+  detach(sessionId: string): void {
+    this.setClient(sessionId, []);
+  }
+
+  setClient(sessionId: string, servers: acp.McpServer[]): void {
     const reason = new Error(DISCONNECTED_MESSAGE);
     for (const [k, endpoint] of this.endpoints) {
       if (!k.startsWith(`${encodeURIComponent(sessionId)}/`)) continue;
@@ -219,12 +219,12 @@ export class McpProxy {
       endpoint.bridge?.close(reason);
       endpoint.bridge = undefined;
       for (const abort of endpoint.aborts) abort.abort(reason);
-      endpoint.upstream = servers?.find((s) => s.name === name) ?? null;
+      endpoint.upstream = servers.find((s) => s.name === name) ?? null;
     }
   }
 
   unregister(sessionId: string): void {
-    this.setClient(sessionId, null);
+    this.detach(sessionId);
     for (const k of [...this.endpoints.keys()]) if (k.startsWith(`${encodeURIComponent(sessionId)}/`)) this.endpoints.delete(k);
   }
 

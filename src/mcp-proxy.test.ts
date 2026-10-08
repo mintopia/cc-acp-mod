@@ -109,7 +109,7 @@ test("calls while detached fail fast with a Client disconnected error", async ()
   proxy.setClient("s1", [http(upstream, "t")]);
   const hung = rpc(config.harmonic!.url);
   await new Promise((r) => setTimeout(r, 50));
-  proxy.setClient("s1", null);
+  proxy.detach("s1");
   expect((await hung).body.error?.message).toMatch(/Client disconnected/);
 });
 

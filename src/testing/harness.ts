@@ -37,7 +37,6 @@ function check(def: string, value: unknown): string | undefined {
   return fn(value) ? undefined : `${def}: ${ajv.errorsText(fn.errors)}`;
 }
 
-/** The generic envelope accepts any ext method, so method-specific payloads are checked against their own definitions too. */
 export function schemaViolation(message: JsonRpcMessage, requestMethod?: string): string | undefined {
   if (!validate(message)) return ajv.errorsText(validate.errors);
   if (message.method) {
@@ -59,7 +58,6 @@ export interface JsonRpcMessage {
 }
 
 export interface Harness {
-  /** Every message the Adapter wrote, in order; violations are reported by close(). */
   readonly emitted: JsonRpcMessage[];
   readonly mods: Map<string, FakeMod>;
   readonly resumed: Map<string, boolean>;
