@@ -1,5 +1,18 @@
 # Changelog
 
+## [0.3.0](https://github.com/mintopia/cc-acp-mod/compare/v0.2.0...v0.3.0) (2026-10-08)
+
+
+### Features
+
+* hold session/prompt open while background subagents run and forward subagent events with parentToolUseId ([25da66e](https://github.com/mintopia/cc-acp-mod/commit/25da66e354b191ba3dcc254ad98785ca8c0a75c4))
+* hold the prompt for background subagents, forward subagent events ([ac06de9](https://github.com/mintopia/cc-acp-mod/commit/ac06de9ace51bed805d46bceebb945ab3f07015e))
+
+
+### Bug Fixes
+
+* submit Client prompts as the user's own words instead of a plugin message ([ad25b00](https://github.com/mintopia/cc-acp-mod/commit/ad25b00f38132e9df481d5013e808702cd24d5a8))
+
 ## [0.2.0](https://github.com/mintopia/cc-acp-mod/compare/v0.1.3...v0.2.0) (2026-10-08)
 
 
