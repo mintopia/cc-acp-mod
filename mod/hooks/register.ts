@@ -52,6 +52,8 @@ function emit($: any, event: Event) {
 function runCommand($: any, command: { type: string; text?: string }) {
   if (command.type === 'prompt' && command.text !== undefined) {
     void $.prompt.submit({ text: command.text }).catch(() => emit($, { type: 'turn_completed', reason: 'error' }))
+  } else if (command.type === 'cancel') {
+    void $.turn.abort().catch(() => {})
   }
 }
 
