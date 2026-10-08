@@ -1,0 +1,4 @@
+node_modules
+dist
+mod/.claude-plugin/types
+mod/tsconfig.json
