@@ -41,7 +41,18 @@ interface QueuedPrompt {
   cancelRequested: boolean;
 }
 
+interface Hold {
+  outcome: PromptOutcome;
+  count: number;
+  turnRunning: boolean;
+  cap?: NodeJS.Timeout;
+  grace?: NodeJS.Timeout;
+}
+
+type PromptOutcome = { stopReason: acp.StopReason; usage?: acp.Usage };
+
 interface Session {
+  hold?: Hold;
   host: Awaited<ReturnType<HostLauncher>>;
   queue: QueuedPrompt[];
   intake?: Promise<void>;
@@ -72,6 +83,26 @@ export const FAST_CONFIG_ID = "fast";
 const EFFORT_LEVELS = ["low", "medium", "high", "xhigh", "max"];
 const FAST_VALUES = ["off", "on"];
 const SET_CONFIG_TIMEOUT_MS = 30_000;
+export const HOLD_CAP_MS = 10 * 60_000;
+export const HOLD_GRACE_MS = 5_000;
+
+function addUsage(a: acp.Usage | undefined, b: acp.Usage | undefined): acp.Usage | undefined {
+  if (!a || !b) return a ?? b;
+  const sum = (x?: number | null, y?: number | null) => (x == null && y == null ? undefined : (x ?? 0) + (y ?? 0));
+  const cachedReadTokens = sum(a.cachedReadTokens, b.cachedReadTokens);
+  const cachedWriteTokens = sum(a.cachedWriteTokens, b.cachedWriteTokens);
+  return {
+    totalTokens: a.totalTokens + b.totalTokens,
+    inputTokens: a.inputTokens + b.inputTokens,
+    outputTokens: a.outputTokens + b.outputTokens,
+    ...(cachedReadTokens !== undefined ? { cachedReadTokens } : {}),
+    ...(cachedWriteTokens !== undefined ? { cachedWriteTokens } : {}),
+  };
+}
+
+function subagentMeta(parentToolUseId: string | undefined) {
+  return parentToolUseId ? { parentToolUseId } : {};
+}
 
 function configOptions(session: Session): acp.SessionConfigOption[] {
   return [
@@ -386,6 +417,7 @@ export class CcAcpAgent {
 
   async close(): Promise<void> {
     await Promise.all([...this.sessions.values()].map(async (s) => {
+      this.clearHold(s);
       await s.host.channel.close();
       await s.attachments.cleanup();
     }));
@@ -407,12 +439,37 @@ export class CcAcpAgent {
       entry.cancelRequested = true;
       for (const pending of [...session.pendingPermissions.values()]) pending.reject();
       session.host.channel.send({ type: "cancel" });
+      if (session.hold) this.settleHold(session, { stopReason: "cancelled" });
       return;
     }
     const index = session.queue.indexOf(entry);
     if (index === -1) return;
     session.queue.splice(index, 1);
     entry.resolve({ stopReason: "cancelled" });
+  }
+
+  private clearHold(session: Session): void {
+    if (!session.hold) return;
+    clearTimeout(session.hold.cap);
+    clearTimeout(session.hold.grace);
+    session.hold = undefined;
+  }
+
+  private settleHold(session: Session, outcome?: PromptOutcome): void {
+    const hold = session.hold;
+    const done = session.current;
+    this.clearHold(session);
+    session.current = undefined;
+    if (done && hold) done.resolve(outcome ?? hold.outcome);
+    this.startNext(session);
+  }
+
+  private armHoldCap(session: Session): void {
+    const hold = session.hold;
+    if (!hold) return;
+    clearTimeout(hold.cap);
+    hold.cap = setTimeout(() => this.settleHold(session, { ...hold.outcome, stopReason: "end_turn" }), HOLD_CAP_MS);
+    hold.cap.unref?.();
   }
 
   private async askQuestion(sessionId: string, event: Extract<ModEvent, { type: "ask_question" }>): Promise<void> {
@@ -484,6 +541,7 @@ export class CcAcpAgent {
     const error = new Error("Session taken over by another Adapter");
     const prompts = [...(session.current ? [session.current] : []), ...session.queue.splice(0)];
     session.current = undefined;
+    this.clearHold(session);
     for (const prompt of prompts) prompt.reject(error);
     await session.host.channel.close().catch(() => {});
     await session.attachments.cleanup();
@@ -491,6 +549,7 @@ export class CcAcpAgent {
 
   private async onEvent(sessionId: string, event: ModEvent, mode: ModeTracker): Promise<void> {
     const session = this.sessions.get(sessionId);
+    if (session?.hold) this.armHoldCap(session);
     if (event.type === "mode") {
       if (mode.update(event.mode)) {
         await this.client.sessionUpdate({
@@ -504,6 +563,7 @@ export class CcAcpAgent {
         update: {
           sessionUpdate: event.kind === "thinking" ? "agent_thought_chunk" : "agent_message_chunk",
           content: { type: "text", text: event.text },
+          ...(event.parentToolUseId ? { _meta: { claudeCode: subagentMeta(event.parentToolUseId) } } : {}),
         },
       });
     } else if (event.type === "model_changed" && session) {
@@ -556,7 +616,7 @@ export class CcAcpAgent {
           toolCallId: event.toolUseId,
           status: "pending",
           rawInput: event.input,
-          _meta: { claudeCode: { toolName: event.tool }, ...(bashTerminal ? { terminal_info: { terminal_id: event.toolUseId } } : {}) },
+          _meta: { claudeCode: { toolName: event.tool, ...subagentMeta(event.parentToolUseId) }, ...(bashTerminal ? { terminal_info: { terminal_id: event.toolUseId } } : {}) },
           ...(content ? { content } : {}),
           ...info,
         },
@@ -565,7 +625,7 @@ export class CcAcpAgent {
         sessionId,
         update: { sessionUpdate: "tool_call_update", toolCallId: event.toolUseId, status: "in_progress" },
       });
-      const entries = planEntries(event.tool, event.input);
+      const entries = event.parentToolUseId ? undefined : planEntries(event.tool, event.input);
       if (entries) await this.client.sessionUpdate({ sessionId, update: { sessionUpdate: "plan", entries } });
     } else if (event.type === "tool_finished") {
       const started = session?.tools.get(event.toolUseId);
@@ -578,9 +638,11 @@ export class CcAcpAgent {
           toolCallId: event.toolUseId,
           status: event.isError ? "failed" : "completed",
           ...(out && !terminal && out.text ? { content: [{ type: "content", content: { type: "text", text: `\`\`\`console\n${out.text.trimEnd()}\n\`\`\`` } }] } : {}),
+          ...(event.parentToolUseId && !terminal ? { _meta: { claudeCode: subagentMeta(event.parentToolUseId) } } : {}),
           ...(terminal
             ? {
                 _meta: {
+                  ...(event.parentToolUseId ? { claudeCode: subagentMeta(event.parentToolUseId) } : {}),
                   terminal_output: { terminal_id: event.toolUseId, data: out.text },
                   terminal_exit: { terminal_id: event.toolUseId, exit_code: out.exitCode ?? (event.isError ? 1 : 0), signal: null },
                 },
@@ -589,15 +651,40 @@ export class CcAcpAgent {
         },
       });
       session?.tools.delete(event.toolUseId);
-      const entries = started && !event.isError ? session?.taskPlan.apply(started.tool, started.input, event.result) : undefined;
+      const entries = started && !event.isError && !event.parentToolUseId ? session?.taskPlan.apply(started.tool, started.input, event.result) : undefined;
       if (entries) await this.client.sessionUpdate({ sessionId, update: { sessionUpdate: "plan", entries } });
+    } else if (event.type === "turn_started" && session?.hold) {
+      session.hold.turnRunning = true;
+      clearTimeout(session.hold.grace);
+    } else if (event.type === "background_agents" && session?.hold) {
+      session.hold.count = event.count;
+      if (event.count === 0 && !session.hold.turnRunning) {
+        clearTimeout(session.hold.grace);
+        const held = session.hold;
+        held.grace = setTimeout(() => {
+          if (session.hold === held && !held.turnRunning) this.settleHold(session);
+        }, HOLD_GRACE_MS);
+      }
     } else if (event.type === "turn_completed" && session?.current) {
       const done = session.current;
-      session.current = undefined;
       for (const pending of [...session.pendingPermissions.values()]) pending.reject();
       const stopReason = done.cancelRequested && event.reason !== "error" ? "cancelled" : STOP_REASONS[event.reason];
-      const usage = session.turnUsage;
+      const turnUsage = session.turnUsage;
       session.turnUsage = undefined;
+      const usage = addUsage(session.hold?.outcome.usage, turnUsage);
+      const count = event.backgroundAgents ?? 0;
+      if (stopReason === "end_turn" && count > 0) {
+        const hold = session.hold ?? { outcome: { stopReason }, count, turnRunning: false };
+        clearTimeout(hold.grace);
+        hold.outcome = { stopReason, ...(usage ? { usage } : {}) };
+        hold.count = count;
+        hold.turnRunning = false;
+        session.hold = hold;
+        this.armHoldCap(session);
+        return;
+      }
+      this.clearHold(session);
+      session.current = undefined;
       if (stopReason) done.resolve({ stopReason, ...(usage ? { usage } : {}) });
       else done.reject(new Error(`Turn ended with ${event.reason}`));
       this.startNext(session);

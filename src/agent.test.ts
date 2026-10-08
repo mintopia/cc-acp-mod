@@ -633,3 +633,122 @@ test("additionalDirectories reach the launcher on new, load, resume and fork, an
   await agent.forkSession({ sessionId: "33333333-3333-3333-3333-333333333333", cwd: "/", additionalDirectories });
   expect(seen).toEqual([additionalDirectories, additionalDirectories, additionalDirectories, additionalDirectories]);
 });
+
+describe("background subagent hold", () => {
+  const settled = async (p: Promise<unknown>) => {
+    let done = false;
+    void p.then(() => (done = true), () => (done = true));
+    await tick();
+    return done;
+  };
+
+  test("holds the prompt until a follow-up turn completes with no live agents", async () => {
+    const h = harness();
+    const { sessionId } = await h.agent.newSession({ cwd: "/", mcpServers: [] });
+    const p = h.agent.prompt(promptOf(sessionId, "go"));
+    h.emit({ type: "usage", inputTokens: 1, outputTokens: 2, contextUsed: 3, contextSize: 10 });
+    h.emit({ type: "turn_completed", reason: "answer", backgroundAgents: 1 });
+    expect(await settled(p)).toBe(false);
+    h.emit({ type: "turn_started", turnId: "t2" });
+    h.emit({ type: "chunk", kind: "text", text: "all done" });
+    h.emit({ type: "usage", inputTokens: 4, outputTokens: 5, contextUsed: 3, contextSize: 10 });
+    h.emit({ type: "turn_completed", reason: "answer" });
+    expect(await p).toEqual({ stopReason: "end_turn", usage: { totalTokens: 12, inputTokens: 5, outputTokens: 7 } });
+    expect(h.updates).toContainEqual({ sessionUpdate: "agent_message_chunk", content: { type: "text", text: "all done" } });
+  });
+
+  test("a queued prompt waits behind the held one", async () => {
+    const h = harness();
+    const { sessionId } = await h.agent.newSession({ cwd: "/", mcpServers: [] });
+    const first = h.agent.prompt(promptOf(sessionId, "one"));
+    const second = h.agent.prompt(promptOf(sessionId, "two"));
+    h.emit({ type: "turn_completed", reason: "answer", backgroundAgents: 2 });
+    await tick();
+    expect(h.sent).toEqual([{ type: "prompt", text: "one" }]);
+    h.emit({ type: "turn_started", turnId: "t2" });
+    h.emit({ type: "turn_completed", reason: "answer" });
+    await first;
+    expect(h.sent).toEqual([{ type: "prompt", text: "one" }, { type: "prompt", text: "two" }]);
+    h.emit({ type: "turn_completed", reason: "answer" });
+    await second;
+  });
+
+  test("resolves with the deferred outcome when agents finish and no follow-up turn starts", async () => {
+    vi.useFakeTimers();
+    try {
+      const h = harness();
+      const { sessionId } = await h.agent.newSession({ cwd: "/", mcpServers: [] });
+      const p = h.agent.prompt(promptOf(sessionId, "go"));
+      h.emit({ type: "turn_completed", reason: "answer", backgroundAgents: 1 });
+      await vi.advanceTimersByTimeAsync(0);
+      h.emit({ type: "background_agents", count: 0 });
+      await vi.advanceTimersByTimeAsync(1_000);
+      expect(await Promise.race([p, Promise.resolve("pending")])).toBe("pending");
+      await vi.advanceTimersByTimeAsync(5_000);
+      expect(await p).toEqual({ stopReason: "end_turn" });
+    } finally {
+      vi.useRealTimers();
+    }
+  });
+
+  test("a follow-up turn starting after agents finish cancels the grace resolve", async () => {
+    vi.useFakeTimers();
+    try {
+      const h = harness();
+      const { sessionId } = await h.agent.newSession({ cwd: "/", mcpServers: [] });
+      const p = h.agent.prompt(promptOf(sessionId, "go"));
+      h.emit({ type: "turn_completed", reason: "answer", backgroundAgents: 1 });
+      await vi.advanceTimersByTimeAsync(0);
+      h.emit({ type: "background_agents", count: 0 });
+      h.emit({ type: "turn_started", turnId: "t2" });
+      await vi.advanceTimersByTimeAsync(30_000);
+      expect(await Promise.race([p, Promise.resolve("pending")])).toBe("pending");
+      h.emit({ type: "turn_completed", reason: "answer" });
+      expect(await p).toEqual({ stopReason: "end_turn" });
+    } finally {
+      vi.useRealTimers();
+    }
+  });
+
+  test("cancel resolves a held prompt immediately", async () => {
+    const h = harness();
+    const { sessionId } = await h.agent.newSession({ cwd: "/", mcpServers: [] });
+    const p = h.agent.prompt(promptOf(sessionId, "go"));
+    h.emit({ type: "turn_completed", reason: "answer", backgroundAgents: 1 });
+    await tick();
+    await h.agent.cancel({ sessionId });
+    expect(await p).toEqual({ stopReason: "cancelled" });
+    expect(h.sent).toContainEqual({ type: "cancel" });
+  });
+
+  test("safety cap resolves end_turn after 10 minutes without Mod events", async () => {
+    vi.useFakeTimers();
+    try {
+      const h = harness();
+      const { sessionId } = await h.agent.newSession({ cwd: "/", mcpServers: [] });
+      const p = h.agent.prompt(promptOf(sessionId, "go"));
+      h.emit({ type: "turn_completed", reason: "answer", backgroundAgents: 1 });
+      await vi.advanceTimersByTimeAsync(9 * 60_000);
+      h.emit({ type: "background_agents", count: 1 });
+      await vi.advanceTimersByTimeAsync(9 * 60_000);
+      expect(await Promise.race([p, Promise.resolve("pending")])).toBe("pending");
+      await vi.advanceTimersByTimeAsync(2 * 60_000);
+      expect(await p).toEqual({ stopReason: "end_turn" });
+    } finally {
+      vi.useRealTimers();
+    }
+  });
+
+  test("subagent tool calls and chunks carry parentToolUseId and skip the plan", async () => {
+    const h = harness();
+    const { sessionId } = await h.agent.newSession({ cwd: "/", mcpServers: [] });
+    void h.agent.prompt(promptOf(sessionId, "go"));
+    h.emit({ type: "tool_started", toolUseId: "b1", tool: "Bash", input: { command: "ls" }, parentToolUseId: "agent1" });
+    h.emit({ type: "chunk", kind: "text", text: "hi", parentToolUseId: "agent1" });
+    h.emit({ type: "tool_finished", toolUseId: "b1", isError: false, parentToolUseId: "agent1" });
+    await tick();
+    expect(h.updates).toContainEqual(expect.objectContaining({ sessionUpdate: "tool_call", toolCallId: "b1", _meta: { claudeCode: { toolName: "Bash", parentToolUseId: "agent1" } } }));
+    expect(h.updates).toContainEqual({ sessionUpdate: "agent_message_chunk", content: { type: "text", text: "hi" }, _meta: { claudeCode: { parentToolUseId: "agent1" } } });
+    expect(h.updates).toContainEqual(expect.objectContaining({ sessionUpdate: "tool_call_update", toolCallId: "b1", status: "completed", _meta: { claudeCode: { parentToolUseId: "agent1" } } }));
+  });
+});

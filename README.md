@@ -6,6 +6,7 @@ An [Agent Client Protocol](https://agentclientprotocol.com) (ACP) agent for Clau
 
 - Session methods `session/new`, `session/load`, `session/resume`, `session/fork`, `session/list`, `session/close` and `session/delete`.
 - Streamed prompts, with text, image, resource link and embedded resource content blocks. Thinking streams separately from the reply, and each turn reports its token usage.
+- Background subagents hold the prompt: when a turn ends while they run, `session/prompt` resolves only after they finish and Claude Code's follow-up turn completes. Subagent tool calls and text are forwarded tagged with `_meta.claudeCode.parentToolUseId`.
 - Steering, which sends a message mid-turn through the `_session/steering` extension when the session reports support for it.
 - Tool calls with file edits shown as diffs, and Bash output shown as a terminal when the Client supports one.
 - Permission requests forwarded to the Client, and `session/set_mode` to switch permission modes.
