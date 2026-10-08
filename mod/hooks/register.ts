@@ -6,6 +6,9 @@ const RETRY_MS = 1_000
 const MAX_RETRY_MS = 5_000
 const MAX_BUFFERED = 5_000
 const TITLE_MAX = 80
+const DEFAULT_IDLE_MS = 3_600_000
+const MAX_REAP_CHECK_MS = 60_000
+const TMUX_SOCKET = 'cc-acp'
 
 type Event =
   | { type: 'turn_started'; turnId: string }
@@ -46,6 +49,9 @@ let probing = false
 let probeCount = 0
 let probeCommand: string | undefined
 let probeFile: string | undefined
+let idleMs = DEFAULT_IDLE_MS
+let unownedSince: number | undefined
+let turnActive = false
 
 async function post($: any, path: string, body: unknown) {
   const res = await $.http.fetch(`http://adapter${path}`, {
@@ -90,6 +96,7 @@ function scheduleReconnect($: any) {
 function markDisconnected($: any) {
   if (!connected) return
   connected = false
+  unownedSince = Date.now()
   pollEpoch++
   scheduleReconnect($)
 }
@@ -254,6 +261,7 @@ async function connect($: any): Promise<void> {
     }
     await post($, '/hello', { protocolVersion: PROTOCOL_VERSION, sessionId, modVersion: MOD_VERSION, steering, buffered: outbox.length })
     connected = true
+    unownedSince = undefined
     retryMs = RETRY_MS
     void flush($)
     const epoch = ++pollEpoch
@@ -275,6 +283,32 @@ async function awaitDecision($: any, requestId: string): Promise<string> {
   }
 }
 
+function parseIdleMs(raw: string): number {
+  const n = Number(raw)
+  return raw !== '' && Number.isFinite(n) && n >= 0 ? n : DEFAULT_IDLE_MS
+}
+
+function isBusy(): boolean {
+  return turnActive || pending.size > 0 || pendingQuestions.size > 0
+}
+
+function scheduleReapCheck($: any) {
+  $.clock.after(Math.min(MAX_REAP_CHECK_MS, idleMs), () => reapCheck($))
+}
+
+async function reapCheck($: any): Promise<void> {
+  if (connected || isBusy()) unownedSince = connected ? undefined : Date.now()
+  if (!connected && unownedSince !== undefined && Date.now() - unownedSince >= idleMs) {
+    try {
+      const sessionId = await $.session.id()
+      if (socketPath) await $.process.run(['rm', '-f', socketPath])
+      await $.process.run(['tmux', '-L', TMUX_SOCKET, 'kill-session', '-t', `cc-acp-${sessionId}`])
+    } catch {}
+    return
+  }
+  scheduleReapCheck($)
+}
+
 export const register: Register = (on) => {
   on('session.start', async ($, e, next) => {
     if (!started) {
@@ -283,6 +317,9 @@ export const register: Register = (on) => {
       const dir = (await $.process.run(['printenv', 'CC_ACP_SOCKET_DIR'])).stdout.trim()
       probeFile = (await $.process.run(['printenv', 'CC_ACP_PROBE_FILE'])).stdout.trim()
       probeCommand = (await $.process.run(['printenv', 'CC_ACP_PROBE_COMMAND'])).stdout.trim()
+      idleMs = parseIdleMs((await $.process.run(['printenv', 'CC_ACP_IDLE_TIMEOUT_MS'])).stdout.trim())
+      unownedSince = Date.now()
+      if (idleMs > 0) scheduleReapCheck($)
       if (probeCommand) await $.command.register({ name: probeCommand, description: 'Report the permission mode to the cc-acp Adapter' })
       const sessionId = await $.session.id()
       socketPath = `${dir}/${sessionId}.sock`
@@ -336,6 +373,7 @@ export const register: Register = (on) => {
   })
 
   on('turn.start', async ($, e, next) => {
+    if (e.agentId === undefined) turnActive = true
     void reportModel($)
     emit($, { type: 'turn_started', turnId: e.turnId })
     return next(e)
@@ -393,6 +431,7 @@ export const register: Register = (on) => {
 
   on('turn.complete', async ($, e, next) => {
     if (e.agentId === undefined) {
+      turnActive = false
       await reportUsage($, e)
       await reportTitle($)
       emit($, { type: 'turn_completed', reason: e.reason })
