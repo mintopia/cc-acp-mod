@@ -4,7 +4,7 @@ Each task maps to one GitHub issue (child of the epic). "Blocked by" lists task 
 
 ## 1. Foundation (Tier 1)
 - [ ] 1.1 Spike: validate mod API assumptions — blocked by: none
-- [ ] 1.2 Tracer bullet: text prompt end-to-end — blocked by: 1.1
+- [x] 1.2 Tracer bullet: text prompt end-to-end — blocked by: 1.1
 - [ ] 1.3 Protocol test harness (fake Mod + ACP schema validation) — blocked by: 1.2
 - [ ] 1.4 Thinking, tool calls and plan updates — blocked by: 1.2
 - [ ] 1.5 Cancellation and prompt queueing — blocked by: 1.2
