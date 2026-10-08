@@ -2,6 +2,7 @@ import { randomUUID } from "node:crypto";
 import * as acp from "@agentclientprotocol/sdk";
 import { launchHostSession, switchModel, type HostSession } from "./host-session.js";
 import { MODEL_CONFIG_ID, buildModelList, initialModelId, type ModelInfo } from "./models.js";
+import { TaskPlan, planEntries, toolInfo } from "./tool-mapping.js";
 import type { ModEvent, TurnReason } from "./protocol.js";
 
 export interface UpdateSink {
@@ -25,6 +26,8 @@ interface QueuedPrompt {
 interface Session {
   host: Awaited<ReturnType<HostLauncher>>;
   queue: QueuedPrompt[];
+  taskPlan: TaskPlan;
+  tools: Map<string, { tool: string; input: Record<string, unknown> }>;
   current?: QueuedPrompt;
   models: ModelInfo[];
   currentModel: string;
@@ -68,15 +71,20 @@ export class CcAcpAgent {
   async newSession(params: acp.NewSessionRequest): Promise<acp.NewSessionResponse> {
     const sessionId = randomUUID();
     const env = process.env;
+    let events: Promise<void> = Promise.resolve();
     const host = await this.launch({
       sessionId,
       cwd: params.cwd,
       env,
-      onEvent: (event) => void this.onEvent(sessionId, event).catch(() => {}),
+      onEvent: (event) => {
+        events = events.then(() => this.onEvent(sessionId, event)).catch(() => {});
+      },
     });
     const session: Session = {
       host,
       queue: [],
+      taskPlan: new TaskPlan(),
+      tools: new Map(),
       models: buildModelList(env),
       currentModel: initialModelId(env),
       modelWaiters: new Map(),
@@ -153,7 +161,10 @@ export class CcAcpAgent {
     if (event.type === "chunk") {
       await this.client.sessionUpdate({
         sessionId,
-        update: { sessionUpdate: "agent_message_chunk", content: { type: "text", text: event.text } },
+        update: {
+          sessionUpdate: event.kind === "thinking" ? "agent_thought_chunk" : "agent_message_chunk",
+          content: { type: "text", text: event.text },
+        },
       });
     } else if (event.type === "model_changed" && session) {
       for (const resolve of session.modelWaiters.values()) resolve();
@@ -164,6 +175,39 @@ export class CcAcpAgent {
         sessionId,
         update: { sessionUpdate: "config_option_update", configOptions: [modelOption(session)] },
       });
+    } else if (event.type === "tool_started") {
+      session?.tools.set(event.toolUseId, { tool: event.tool, input: event.input });
+      const info = toolInfo(event.tool, event.input);
+      await this.client.sessionUpdate({
+        sessionId,
+        update: {
+          sessionUpdate: "tool_call",
+          toolCallId: event.toolUseId,
+          status: "pending",
+          rawInput: event.input,
+          _meta: { claudeCode: { toolName: event.tool } },
+          ...info,
+        },
+      });
+      await this.client.sessionUpdate({
+        sessionId,
+        update: { sessionUpdate: "tool_call_update", toolCallId: event.toolUseId, status: "in_progress" },
+      });
+      const entries = planEntries(event.tool, event.input);
+      if (entries) await this.client.sessionUpdate({ sessionId, update: { sessionUpdate: "plan", entries } });
+    } else if (event.type === "tool_finished") {
+      await this.client.sessionUpdate({
+        sessionId,
+        update: {
+          sessionUpdate: "tool_call_update",
+          toolCallId: event.toolUseId,
+          status: event.isError ? "failed" : "completed",
+        },
+      });
+      const started = session?.tools.get(event.toolUseId);
+      session?.tools.delete(event.toolUseId);
+      const entries = started && !event.isError ? session?.taskPlan.apply(started.tool, started.input, event.result) : undefined;
+      if (entries) await this.client.sessionUpdate({ sessionId, update: { sessionUpdate: "plan", entries } });
     } else if (event.type === "turn_completed" && session?.current) {
       const done = session.current;
       session.current = undefined;

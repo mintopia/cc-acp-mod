@@ -6,7 +6,9 @@ const RETRY_MS = 1_000
 
 type Event =
   | { type: 'turn_started'; turnId: string }
-  | { type: 'chunk'; kind: 'text'; text: string }
+  | { type: 'chunk'; kind: 'text' | 'thinking'; text: string }
+  | { type: 'tool_started'; toolUseId: string; tool: string; input: Record<string, unknown> }
+  | { type: 'tool_finished'; toolUseId: string; isError: boolean; result?: unknown }
   | { type: 'turn_completed'; reason: string }
   | { type: 'model_changed'; id: string }
 
@@ -117,11 +119,21 @@ export const register: Register = (on) => {
 
   on('turn.step', async function* ($, e, next) {
     for await (const chunk of next(e)) {
-      if (chunk.kind === 'text' && e.agentId === undefined) {
-        emit($, { type: 'chunk', kind: 'text', text: chunk.text })
+      if ((chunk.kind === 'text' || chunk.kind === 'thinking') && e.agentId === undefined) {
+        emit($, { type: 'chunk', kind: chunk.kind, text: chunk.text })
       }
       yield chunk
     }
+  })
+
+  on('tool.call', async ($, e, next) => {
+    if (e.agentId !== undefined) return next(e)
+    const { tool, tool_use_id: toolUseId, agentId: _agentId, ...input } = e as any
+    emit($, { type: 'tool_started', toolUseId, tool, input })
+    const ran = await next(e)
+    const isError = ran.deny !== undefined || ran.isError === true
+    emit($, { type: 'tool_finished', toolUseId, isError, result: isError ? undefined : ran.result })
+    return ran
   })
 
   on('turn.complete', async ($, e, next) => {

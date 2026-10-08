@@ -15,7 +15,9 @@ export type TurnReason = "answer" | "aborted" | "refusal" | "error";
 
 export type ModEvent =
   | { type: "turn_started"; turnId: string }
-  | { type: "chunk"; kind: "text"; text: string }
+  | { type: "chunk"; kind: "text" | "thinking"; text: string }
+  | { type: "tool_started"; toolUseId: string; tool: string; input: Record<string, unknown> }
+  | { type: "tool_finished"; toolUseId: string; isError: boolean; result?: unknown }
   | { type: "turn_completed"; reason: TurnReason }
   | { type: "model_changed"; id: string };
 
