@@ -1,6 +1,6 @@
 {
   "name": "@mintopia/cc-acp",
-  "version": "0.1.3",
+  "version": "0.2.0",
   "description": "ACP agent for Claude Code that drives an interactive session in tmux",
   "license": "MIT",
   "repository": {

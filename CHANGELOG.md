@@ -1,5 +1,18 @@
 # Changelog
 
+## [0.2.0](https://github.com/mintopia/cc-acp-mod/compare/v0.1.3...v0.2.0) (2026-10-08)
+
+
+### Features
+
+* session/set_model and finishing panel slash commands ([ef232f1](https://github.com/mintopia/cc-acp-mod/commit/ef232f1a7792d0479f98bd4f3c61a67e47a64c4d))
+* support session/set_model, mapping full model ids to Claude Code's aliases ([b5f13bf](https://github.com/mintopia/cc-acp-mod/commit/b5f13bf8604673f57a7db191e14b9b8815813f06))
+
+
+### Bug Fixes
+
+* close panels opened by slash-command prompts so the prompt finishes, without interrupting /compact ([014eca2](https://github.com/mintopia/cc-acp-mod/commit/014eca2f2fe5d063b0957b4650023c5dcba120cc))
+
 ## [0.1.3](https://github.com/mintopia/cc-acp-mod/compare/v0.1.2...v0.1.3) (2026-10-08)
 
 
