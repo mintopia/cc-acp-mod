@@ -11,7 +11,7 @@ Each task maps to one GitHub issue (child of the epic). "Blocked by" lists task 
 - [ ] 1.6 Permission bridging — blocked by: 1.4
 - [ ] 1.7 AskUserQuestion via elicitation — blocked by: 1.4
 - [ ] 1.8 Modes — blocked by: 1.2
-- [ ] 1.9 Models — blocked by: 1.2
+- [x] 1.9 Models — blocked by: 1.2
 - [ ] 1.10 Available slash commands — blocked by: 1.2
 - [ ] 1.11 session/load with Revive — blocked by: 1.4
 - [ ] 1.12 Reattach — blocked by: 1.6, 1.11

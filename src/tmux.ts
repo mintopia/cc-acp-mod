@@ -38,3 +38,7 @@ export async function startSession(opts: {
 export async function killSession(sessionId: string): Promise<void> {
   await run("tmux", ["-L", TMUX_SOCKET, "kill-session", "-t", sessionName(sessionId)]).catch(() => {});
 }
+
+export async function sendEnter(sessionId: string): Promise<void> {
+  await run("tmux", ["-L", TMUX_SOCKET, "send-keys", "-t", sessionName(sessionId), "Enter"]);
+}

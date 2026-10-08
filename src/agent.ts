@@ -1,6 +1,7 @@
 import { randomUUID } from "node:crypto";
 import * as acp from "@agentclientprotocol/sdk";
-import { launchHostSession, type HostSession } from "./host-session.js";
+import { launchHostSession, switchModel, type HostSession } from "./host-session.js";
+import { MODEL_CONFIG_ID, buildModelList, initialModelId, type ModelInfo } from "./models.js";
 import type { ModEvent, TurnReason } from "./protocol.js";
 
 export interface UpdateSink {
@@ -10,6 +11,7 @@ export interface UpdateSink {
 export type HostLauncher = (opts: {
   sessionId: string;
   cwd: string;
+  env?: NodeJS.ProcessEnv;
   onEvent: (event: ModEvent) => void;
 }) => Promise<Pick<HostSession, "sessionId"> & { channel: Pick<HostSession["channel"], "send" | "close"> }>;
 
@@ -24,6 +26,20 @@ interface Session {
   host: Awaited<ReturnType<HostLauncher>>;
   queue: QueuedPrompt[];
   current?: QueuedPrompt;
+  models: ModelInfo[];
+  currentModel: string;
+  modelWaiters: Map<string, () => void>;
+}
+
+function modelOption(session: Pick<Session, "models" | "currentModel">): acp.SessionConfigOption {
+  return {
+    id: MODEL_CONFIG_ID,
+    name: "Model",
+    category: "model",
+    type: "select",
+    currentValue: session.currentModel,
+    options: session.models.map((m) => ({ value: m.id, name: m.name, description: m.description })),
+  };
 }
 
 const STOP_REASONS: Partial<Record<TurnReason, acp.StopReason>> = {
@@ -51,13 +67,39 @@ export class CcAcpAgent {
 
   async newSession(params: acp.NewSessionRequest): Promise<acp.NewSessionResponse> {
     const sessionId = randomUUID();
+    const env = process.env;
     const host = await this.launch({
       sessionId,
       cwd: params.cwd,
+      env,
       onEvent: (event) => void this.onEvent(sessionId, event).catch(() => {}),
     });
-    this.sessions.set(sessionId, { host, queue: [] });
-    return { sessionId };
+    const session: Session = {
+      host,
+      queue: [],
+      models: buildModelList(env),
+      currentModel: initialModelId(env),
+      modelWaiters: new Map(),
+    };
+    this.sessions.set(sessionId, session);
+    return { sessionId, configOptions: [modelOption(session)] };
+  }
+
+  async setSessionConfigOption(params: acp.SetSessionConfigOptionRequest): Promise<acp.SetSessionConfigOptionResponse> {
+    const session = this.sessions.get(params.sessionId);
+    if (!session) throw new Error(`Unknown session ${params.sessionId}`);
+    if (params.configId !== MODEL_CONFIG_ID) throw new Error(`Unknown config option ${params.configId}`);
+    const id = String(params.value);
+    if (!session.models.some((m) => m.id === id)) throw new Error(`Unknown model ${id}`);
+    if (id !== session.currentModel) {
+      const changed = new Promise<void>((resolve) => session.modelWaiters.set(id, resolve));
+      try {
+        await switchModel(session.host, id, changed);
+      } finally {
+        session.modelWaiters.delete(id);
+      }
+    }
+    return { configOptions: [modelOption(session)] };
   }
 
   async authenticate(): Promise<void> {}
@@ -112,6 +154,15 @@ export class CcAcpAgent {
       await this.client.sessionUpdate({
         sessionId,
         update: { sessionUpdate: "agent_message_chunk", content: { type: "text", text: event.text } },
+      });
+    } else if (event.type === "model_changed" && session) {
+      for (const resolve of session.modelWaiters.values()) resolve();
+      if (event.id === session.currentModel) return;
+      session.currentModel = event.id;
+      if (!session.models.some((m) => m.id === event.id)) session.models.push({ id: event.id, name: event.id });
+      await this.client.sessionUpdate({
+        sessionId,
+        update: { sessionUpdate: "config_option_update", configOptions: [modelOption(session)] },
       });
     } else if (event.type === "turn_completed" && session?.current) {
       const done = session.current;
