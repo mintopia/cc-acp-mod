@@ -18,6 +18,7 @@ type Event =
   | { type: 'commands'; commands: { name: string; description?: string; argumentHint?: string; terminalOnly?: boolean }[] }
   | { type: 'ask_question'; requestId: string; questions: unknown[] }
   | { type: 'permission_request'; requestId: string; tool: string; input: Record<string, unknown>; toolUseId?: string; suggestions?: unknown[] }
+  | { type: 'mode'; mode: string }
 
 let outbox: Event[] = []
 let flushing = false
@@ -30,6 +31,11 @@ let lastCommands: string | undefined
 let nextRequest = 0
 const pendingQuestions = new Map<string, (answers: Record<string, string> | null) => void>()
 let permissionSeq = 0
+let lastMode: string | undefined
+let probing = false
+let probeCount = 0
+let probeCommand: string | undefined
+let probeFile: string | undefined
 
 function post($: any, path: string, body: unknown) {
   return $.http.fetch(`http://adapter${path}`, {
@@ -57,6 +63,15 @@ async function flush($: any): Promise<void> {
     }
   } finally {
     flushing = false
+  }
+}
+
+function reportMode($: any, e: any) {
+  const mode = e.permission_mode
+  if (typeof mode === 'string' && e.agent_id === undefined && (mode !== lastMode || probing)) {
+    lastMode = mode
+    probing = false
+    emit($, { type: 'mode', mode })
   }
 }
 
@@ -205,12 +220,57 @@ export const register: Register = (on) => {
     if (!started) {
       started = true
       const dir = (await $.process.run(['printenv', 'CC_ACP_SOCKET_DIR'])).stdout.trim()
+      probeFile = (await $.process.run(['printenv', 'CC_ACP_PROBE_FILE'])).stdout.trim()
+      probeCommand = (await $.process.run(['printenv', 'CC_ACP_PROBE_COMMAND'])).stdout.trim()
+      if (probeCommand) await $.command.register({ name: probeCommand, description: 'Report the permission mode to the cc-acp Adapter' })
       const sessionId = await $.session.id()
       socketPath = `${dir}/${sessionId}.sock`
       $.clock.after(0, () => connect($))
       $.clock.after(0, () => reportModel($))
       $.clock.after(0, () => reportCommands($))
     }
+    return next(e)
+  })
+
+  on('tool.check', { tool: 'Read' }, async ($, e, next) => {
+    if (probing && (e.input as { file_path?: string }).file_path === probeFile) return { decision: 'allow' }
+    return next(e)
+  })
+
+  on('command.run', async ($, e, next) => {
+    if (probeCommand === undefined || e.command !== probeCommand) return next(e)
+    probing = true
+    try {
+      probeCount += 1
+      await $.tool.call({ tool: 'Read', file_path: probeFile, limit: probeCount })
+    } finally {
+      probing = false
+    }
+    return { text: '' }
+  })
+
+  on('classic.UserPromptSubmit', async ($, e, next) => {
+    reportMode($, e)
+    return next(e)
+  })
+
+  on('classic.PermissionRequest', async ($, e, next) => {
+    reportMode($, e)
+    return next(e)
+  })
+
+  on('classic.PostToolUse', async ($, e, next) => {
+    reportMode($, e)
+    return next(e)
+  })
+
+  on('classic.Notification', async ($, e, next) => {
+    reportMode($, e)
+    return next(e)
+  })
+
+  on('classic.Stop', async ($, e, next) => {
+    reportMode($, e)
     return next(e)
   })
 

@@ -48,6 +48,7 @@ export type ModEvent =
       input: Record<string, unknown>;
       toolUseId?: string;
       suggestions?: unknown[];
-    };
+    }
+  | { type: "mode"; mode: string };
 
 export const POLL_WINDOW_MS = 20_000;

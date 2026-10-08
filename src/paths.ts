@@ -17,3 +17,7 @@ export function claudeConfigFile(env: NodeJS.ProcessEnv = process.env): string {
 export function claudeProjectsDir(env: NodeJS.ProcessEnv = process.env): string {
   return join(env.CLAUDE_CONFIG_DIR || join(homedir(), ".claude"), "projects");
 }
+
+export function claudeConfigDir(env: NodeJS.ProcessEnv = process.env): string {
+  return env.CLAUDE_CONFIG_DIR || join(homedir(), ".claude");
+}

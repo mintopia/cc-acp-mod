@@ -35,6 +35,17 @@ export async function startSession(opts: {
   ]);
 }
 
+export async function pressShiftTab(sessionId: string): Promise<void> {
+  await run("tmux", ["-L", TMUX_SOCKET, "send-keys", "-t", sessionName(sessionId), "BTab"]);
+}
+
+export async function typeCommand(sessionId: string, text: string): Promise<void> {
+  const target = sessionName(sessionId);
+  await run("tmux", ["-L", TMUX_SOCKET, "send-keys", "-t", target, "-l", text]);
+  await new Promise((resolve) => setTimeout(resolve, 200));
+  await run("tmux", ["-L", TMUX_SOCKET, "send-keys", "-t", target, "Enter"]);
+}
+
 export async function killSession(sessionId: string): Promise<void> {
   await run("tmux", ["-L", TMUX_SOCKET, "kill-session", "-t", sessionName(sessionId)]).catch(() => {});
 }

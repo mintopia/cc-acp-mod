@@ -3,9 +3,11 @@ import * as acp from "@agentclientprotocol/sdk";
 import { claudeLoggedIn, terminalAuthMethods } from "./auth.js";
 import { formAnswers, questionForm } from "./ask-user-question.js";
 import { McpProxy, type HostMcpServer } from "./mcp-proxy.js";
-import { launchHostSession, switchModel, type HostSession } from "./host-session.js";
+import { launchHostSession, switchModel, MODE_PROBE_COMMAND, type HostSession, type ModeTracker } from "./host-session.js";
 import { MODEL_CONFIG_ID, buildModelList, initialModelId, type ModelInfo } from "./models.js";
+import { switchMode, toAcpModeState } from "./modes.js";
 import { SessionAttachments, promptText } from "./prompt-content.js";
+import { pressShiftTab, typeCommand } from "./tmux.js";
 import { TaskPlan, bashOutput, diffContent, planEntries, toolInfo } from "./tool-mapping.js";
 import { readTranscript } from "./transcript.js";
 import type { ModEvent, PermissionDecision, SlashCommand, TurnReason } from "./protocol.js";
@@ -24,8 +26,8 @@ export type HostLauncher = (opts: {
   mcpServers?: Record<string, HostMcpServer>;
   resume?: boolean;
   forkFrom?: string;
-  onEvent: (event: ModEvent) => void;
-}) => Promise<Pick<HostSession, "sessionId"> & { steering?: boolean; channel: Pick<HostSession["channel"], "send" | "close"> & Partial<Pick<HostSession["channel"], "answerPermission">> }>;
+  onEvent: (event: ModEvent, mode: ModeTracker) => void;
+}) => Promise<Pick<HostSession, "sessionId" | "modes" | "mode"> & { steering?: boolean; channel: Pick<HostSession["channel"], "send" | "close"> & Partial<Pick<HostSession["channel"], "answerPermission">> }>;
 
 interface QueuedPrompt {
   text: string;
@@ -90,16 +92,9 @@ function modelOption(session: Pick<Session, "models" | "currentModel">): acp.Ses
   };
 }
 
-function modeState(env: NodeJS.ProcessEnv = process.env): acp.SessionModeState {
-  const modes = [
-    { id: "default", name: "Default" },
-    { id: "acceptEdits", name: "Accept Edits" },
-    { id: "plan", name: "Plan Mode" },
-    { id: "auto", name: "Auto" },
-  ];
-  if (process.getuid?.() !== 0 || env.IS_SANDBOX) modes.push({ id: "bypassPermissions", name: "Bypass Permissions" });
-  return { currentModeId: "default", availableModes: modes };
-}
+const MODE_REPORT_TIMEOUT_MS = 5_000;
+const KEY_SETTLE_MS = 150;
+const PROBE_DRAIN_MS = 500;
 
 const STOP_REASONS: Partial<Record<TurnReason, acp.StopReason>> = {
   answer: "end_turn",
@@ -146,21 +141,21 @@ export class CcAcpAgent {
   async newSession(params: acp.NewSessionRequest): Promise<acp.NewSessionResponse> {
     const sessionId = randomUUID();
     const session = await this.startSession(sessionId, params.cwd, params.mcpServers, false);
-    return { sessionId, configOptions: configOptions(session), _meta: { steering: { supported: session.host.steering === true } } };
+    return { sessionId, modes: toAcpModeState(session.host.modes, session.host.mode.current), configOptions: configOptions(session), _meta: { steering: { supported: session.host.steering === true } } };
   }
 
   async loadSession(params: acp.LoadSessionRequest): Promise<acp.LoadSessionResponse> {
     const { sessionId } = params;
     for (const update of await readTranscript(sessionId, process.env)) await this.client.sessionUpdate({ sessionId, update });
     const session = this.sessions.get(sessionId) ?? (await this.startSession(sessionId, params.cwd, params.mcpServers, true));
-    return { modes: modeState(), configOptions: configOptions(session), _meta: { steering: { supported: session.host.steering === true } } };
+    return { modes: toAcpModeState(session.host.modes, session.host.mode.current), configOptions: configOptions(session), _meta: { steering: { supported: session.host.steering === true } } };
   }
 
   async forkSession(params: acp.ForkSessionRequest): Promise<acp.ForkSessionResponse> {
     const sessionId = randomUUID();
     const session = await this.startSession(sessionId, params.cwd, params.mcpServers ?? [], false, params.sessionId);
     for (const update of await readTranscript(params.sessionId, process.env)) await this.client.sessionUpdate({ sessionId, update });
-    return { sessionId, modes: modeState(), configOptions: configOptions(session), _meta: { steering: { supported: session.host.steering === true } } };
+    return { sessionId, modes: toAcpModeState(session.host.modes, session.host.mode.current), configOptions: configOptions(session), _meta: { steering: { supported: session.host.steering === true } } };
   }
 
   private async startSession(sessionId: string, cwd: string, clientServers: acp.McpServer[], resume: boolean, forkFrom?: string): Promise<Session> {
@@ -178,10 +173,10 @@ export class CcAcpAgent {
       resume,
       forkFrom,
       disallowedTools: this.formElicitation ? [] : ["AskUserQuestion"],
-      onEvent: (event) => {
+      onEvent: (event, mode) => {
         if (event.type === "ask_question") return void this.askQuestion(sessionId, event);
         if (event.type === "commands" && !this.sessions.has(sessionId)) return void pendingCommands.set(sessionId, event.commands);
-        events = events.then(() => this.onEvent(sessionId, event)).catch(() => {});
+        events = events.then(() => this.onEvent(sessionId, event, mode)).catch(() => {});
       },
     }).catch((err) => {
       this.mcpProxy.unregister(sessionId);
@@ -256,6 +251,29 @@ export class CcAcpAgent {
     const converted = promptText(params.prompt, session.attachments);
     const text = typeof converted === "string" ? converted : await converted;
     session.host.channel.send({ type: "steer", text });
+    return {};
+  }
+
+  async setSessionMode(params: acp.SetSessionModeRequest): Promise<acp.SetSessionModeResponse> {
+    const session = this.sessions.get(params.sessionId);
+    if (!session) throw new Error(`Unknown session ${params.sessionId}`);
+    const { host } = session;
+    if (!host.modes.availableModes.some((m) => m === params.modeId)) {
+      throw new Error(`Mode "${params.modeId}" is not available for this session`);
+    }
+    await switchMode({
+      target: params.modeId,
+      current: () => host.mode.current,
+      pressShiftTab: () => pressShiftTab(host.sessionId),
+      waitForChange: async () => {
+        await new Promise((r) => setTimeout(r, KEY_SETTLE_MS));
+        const report = host.mode.waitForReport(MODE_REPORT_TIMEOUT_MS);
+        await typeCommand(host.sessionId, `/${MODE_PROBE_COMMAND}`);
+        const mode = await report;
+        await new Promise((r) => setTimeout(r, PROBE_DRAIN_MS));
+        return mode;
+      },
+    });
     return {};
   }
 
@@ -368,9 +386,16 @@ export class CcAcpAgent {
     }
   }
 
-  private async onEvent(sessionId: string, event: ModEvent): Promise<void> {
+  private async onEvent(sessionId: string, event: ModEvent, mode: ModeTracker): Promise<void> {
     const session = this.sessions.get(sessionId);
-    if (event.type === "chunk") {
+    if (event.type === "mode") {
+      if (mode.update(event.mode)) {
+        await this.client.sessionUpdate({
+          sessionId,
+          update: { sessionUpdate: "current_mode_update", currentModeId: event.mode },
+        });
+      }
+    } else if (event.type === "chunk") {
       await this.client.sessionUpdate({
         sessionId,
         update: {

@@ -1,16 +1,38 @@
-import { describe, expect, test } from "vitest";
+import { describe, expect, test, vi } from "vitest";
+import * as tmux from "./tmux.js";
 import { CcAcpAgent, type HostLauncher } from "./agent.js";
+import { ModeTracker } from "./host-session.js";
+import { resolveModes } from "./modes.js";
 import type { Command, ModEvent } from "./protocol.js";
+
+const hostModes = () => {
+  const modes = resolveModes([], {}, false);
+  return { modes, mode: new ModeTracker(modes.initialMode) };
+};
 
 function harness() {
   const sent: Command[] = [];
+  const updates: unknown[] = [];
+  const modes = resolveModes([], {}, false);
+  const mode = new ModeTracker(modes.initialMode);
   let emit!: (e: ModEvent) => void;
   const launch: HostLauncher = async ({ sessionId, onEvent }) => {
-    emit = onEvent;
-    return { sessionId, channel: { send: (c) => void sent.push(c), close: async () => {} } };
+    emit = (e) => onEvent(e, mode);
+    return {
+      sessionId,
+      modes,
+      mode,
+      channel: {
+        send: (c) => {
+          sent.push(c);
+        },
+        close: async () => {},
+      },
+    };
   };
-  const agent = new CcAcpAgent({ sessionUpdate: async () => {} }, "0", launch);
-  return { agent, sent, emit: (e: ModEvent) => emit(e) };
+  const probeReports: string[] = [];
+  const agent = new CcAcpAgent({ sessionUpdate: async (u) => void updates.push(u.update) }, "0", launch);
+  return { agent, sent, updates, probeReports, emit: (e: ModEvent) => emit(e) };
 }
 
 const tick = () => new Promise((r) => setTimeout(r, 0));
@@ -78,7 +100,7 @@ function recordingHarness() {
   let emit!: (e: ModEvent) => void;
   const launch: HostLauncher = async ({ sessionId, onEvent }) => {
     emit = onEvent;
-    return { sessionId, channel: { send: () => {}, close: async () => {} } };
+    return { sessionId, ...hostModes(), channel: { send: () => {}, close: async () => {} } };
   };
   const agent = new CcAcpAgent({ sessionUpdate: async (p) => void updates.push(p.update) }, "0", launch);
   return { agent, updates, emit: (e: ModEvent) => emit(e) };
@@ -140,6 +162,7 @@ function steeringHarness(steering: boolean) {
   const launch: HostLauncher = async ({ sessionId }) => ({
     sessionId,
     steering,
+    ...hostModes(),
     channel: { send: (c) => void sent.push(c), close: async () => {} },
   });
   return { agent: new CcAcpAgent({ sessionUpdate: async () => {} }, "0", launch), sent };
@@ -167,7 +190,7 @@ test("effort and fast config options are offered, applied via the Host Session a
   let emit!: (e: ModEvent) => void;
   const launch: HostLauncher = async ({ sessionId, onEvent }) => {
     emit = onEvent;
-    return { sessionId, channel: { send: (c) => void sent.push(c), close: async () => {} } };
+    return { sessionId, ...hostModes(), channel: { send: (c) => void sent.push(c), close: async () => {} } };
   };
   const agent = new CcAcpAgent({ sessionUpdate: async (p) => void updates.push(p.update) }, "0", launch);
   const { sessionId, configOptions } = await agent.newSession({ cwd: "/", mcpServers: [] });
@@ -197,7 +220,7 @@ function elicitHarness(opts: { form: boolean; respond?: (p: any) => any }) {
   const launch: HostLauncher = async ({ sessionId, onEvent, disallowedTools }) => {
     emit = onEvent;
     launched.push({ disallowedTools });
-    return { sessionId, channel: { send: (c) => void sent.push(c), close: async () => {} } };
+    return { sessionId, ...hostModes(), channel: { send: (c) => void sent.push(c), close: async () => {} } };
   };
   const agent = new CcAcpAgent(
     {
@@ -312,7 +335,7 @@ test("Host Session is launched with proxy endpoints, never the Client's URLs", a
   let launched: Parameters<HostLauncher>[0] | undefined;
   const agent = new CcAcpAgent({ sessionUpdate: async () => {} }, "0", async (opts) => {
     launched = opts;
-    return { sessionId: opts.sessionId, channel: { send: () => {}, close: async () => {} } };
+    return { sessionId: opts.sessionId, ...hostModes(), channel: { send: () => {}, close: async () => {} } };
   });
   await agent.newSession({
     cwd: "/",
@@ -329,7 +352,7 @@ test("commands event becomes available_commands_update without terminal-only com
   let emit!: (e: ModEvent) => void;
   const launch: HostLauncher = async ({ sessionId, onEvent }) => {
     emit = onEvent;
-    return { sessionId, channel: { send: () => {}, close: async () => {} } };
+    return { sessionId, ...hostModes(), channel: { send: () => {}, close: async () => {} } };
   };
   const agent = new CcAcpAgent({ sessionUpdate: async (u) => void updates.push(u.update) }, "0", launch);
   await agent.newSession({ cwd: "/", mcpServers: [] });
@@ -354,7 +377,7 @@ test("commands event becomes available_commands_update without terminal-only com
 });
 
 describe("terminal login methods", () => {
-  const launch: HostLauncher = async (opts) => ({ sessionId: opts.sessionId, channel: { send: () => {}, close: async () => {} } });
+  const launch: HostLauncher = async (opts) => ({ sessionId: opts.sessionId, ...hostModes(), channel: { send: () => {}, close: async () => {} } });
   const init = (loggedIn: boolean, terminalAuth: boolean) =>
     new CcAcpAgent({ sessionUpdate: async () => {} }, "0", launch, async () => loggedIn).initialize({
       protocolVersion: 1,
@@ -387,6 +410,7 @@ function permissionHarness(pick: (req: any) => Promise<any>) {
     emit = onEvent;
     return {
       sessionId,
+      ...hostModes(),
       channel: { send: (c) => void sent.push(c), close: async () => {}, answerPermission: (id, d) => void answers.push([id, d]) },
     };
   };
@@ -439,4 +463,43 @@ test("a cancelled outcome from the client denies the tool", async () => {
   h.emit(h.request);
   await tick();
   expect(h.answers).toEqual([["r1", "reject"]]);
+});
+
+test("session/new reports the mode catalogue and current mode", async () => {
+  const h = harness();
+  const res = await h.agent.newSession({ cwd: "/", mcpServers: [] });
+  expect(res.modes?.currentModeId).toBe("default");
+  expect(res.modes?.availableModes.map((m) => m.id)).toContain("plan");
+});
+
+test("session/set_mode probes the Mod after each Shift+Tab and emits current_mode_update", async () => {
+  const h = harness();
+  const { sessionId } = await h.agent.newSession({ cwd: "/", mcpServers: [] });
+  vi.spyOn(tmux, "pressShiftTab").mockResolvedValue();
+  const typed: string[] = [];
+  vi.spyOn(tmux, "typeCommand").mockImplementation(async (_id, text) => {
+    typed.push(text);
+    h.emit({ type: "mode", mode: h.probeReports.shift()! });
+  });
+  h.probeReports.push("acceptEdits", "plan");
+  await h.agent.setSessionMode({ sessionId, modeId: "plan" });
+  expect(typed).toEqual(["/cc-acp-probe-mode", "/cc-acp-probe-mode"]);
+  expect(h.updates).toEqual([
+    { sessionUpdate: "current_mode_update", currentModeId: "acceptEdits" },
+    { sessionUpdate: "current_mode_update", currentModeId: "plan" },
+  ]);
+});
+
+test("session/set_mode rejects a mode that is not offered", async () => {
+  const h = harness();
+  const { sessionId } = await h.agent.newSession({ cwd: "/", mcpServers: [] });
+  await expect(h.agent.setSessionMode({ sessionId, modeId: "dontAsk" })).rejects.toThrow(/not available/);
+});
+
+test("in-session mode changes emit current_mode_update", async () => {
+  const h = harness();
+  await h.agent.newSession({ cwd: "/", mcpServers: [] });
+  h.emit({ type: "mode", mode: "plan" });
+  await tick();
+  expect(h.updates).toEqual([{ sessionUpdate: "current_mode_update", currentModeId: "plan" }]);
 });
