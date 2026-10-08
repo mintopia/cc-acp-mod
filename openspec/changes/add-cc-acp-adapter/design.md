@@ -26,7 +26,7 @@ The Mod runs sandboxed inside Claude Code: no Node, no listening sockets. It can
 - ADR-0004: Adapter proxies the Client's MCP servers
 
 ## Spike findings (issue #2, claude 2.1.293)
-Probe Mod loaded via `--plugin-dir`, driven in tmux against a Unix-socket HTTP server. All six questions answered with evidence.
+Probe Mod loaded via `--plugin-dir`, driven in tmux against a Unix-socket HTTP server.
 
 1. **`--plugin-dir` prompts**: none. The only startup dialog is Claude Code's folder-trust dialog for a never-trusted cwd, shown before the Mod loads; once the cwd is trusted the Mod loads silently. Confirms Launch prep (trust cwd in `~/.claude.json`) and the fail-on-other-dialog rule.
 2. **Long-poll over `socketPath`**: works, but `$.http.fetch` hard-aborts at **30s** ("no complete answer within 30000ms"). A poll window MUST be under 30s (25s worked repeatedly, back-to-back, 150s+ total).
@@ -36,7 +36,7 @@ Probe Mod loaded via `--plugin-dir`, driven in tmux against a Unix-socket HTTP s
 6. **`$.command.run({command:'model', args:id})`**: works, with caveats. It is queued until the session is idle. Mid-conversation it opens a "Switch model? ... full history gets re-read" confirmation dialog that blocks the call until answered (promise resolved only after Enter), then sets the model. It also **persists the model as the user's default** in `~/.claude/settings.json` ("saved as your default for new sessions"), a side effect on the user's global settings.
 
 ### Impact
-- Poll window <= 25s, not an unbounded long-poll; `session.start` returns immediately (adapter-mod-channel).
+- Poll window is at most 25s; `session.start` returns immediately (adapter-mod-channel).
 - `set_mode` loops with Mod readback (modes-and-models).
 - `set_model` is queued, may need a confirmation keystroke, and mutates global settings; prefer the launch-time model (`--model` / `ANTHROPIC_MODEL`) and use `/model` only for mid-session changes (modes-and-models).
 - Permission requests loop short polls and tolerate the concurrent TUI dialog (permissions).
