@@ -6,7 +6,7 @@ export interface Hello {
   modVersion: string;
 }
 
-export type Command = { type: "prompt"; text: string };
+export type Command = { type: "prompt"; text: string } | { type: "cancel" };
 
 export type TurnReason = "answer" | "aborted" | "refusal" | "error";
 
