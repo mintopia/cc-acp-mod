@@ -1,3 +1,4 @@
+import { randomUUID } from "node:crypto";
 import { mkdir, rm, writeFile } from "node:fs/promises";
 import { socketDir } from "./paths.js";
 import { join } from "node:path";
@@ -35,38 +36,38 @@ export class SessionAttachments implements AttachmentDir {
   }
 }
 
-async function saveFile(dir: AttachmentDir, index: number, mimeType: string | undefined, bytes: Buffer): Promise<string> {
+async function saveFile(dir: AttachmentDir, mimeType: string | undefined, bytes: Buffer): Promise<string> {
   const base = await dir.ensure();
   await mkdir(base, { recursive: true });
-  const path = join(base, `attachment-${index}.${EXTENSIONS[mimeType ?? ""] ?? "bin"}`);
+  const path = join(base, `attachment-${randomUUID()}.${EXTENSIONS[mimeType ?? ""] ?? "bin"}`);
   await writeFile(path, bytes);
   return path;
 }
 
-async function imageText(block: acp.ImageContent, dir: AttachmentDir, index: number): Promise<string> {
-  if (block.data) return `[Image attached: ${await saveFile(dir, index, block.mimeType, Buffer.from(block.data, "base64"))}]`;
+async function imageText(block: acp.ImageContent, dir: AttachmentDir): Promise<string> {
+  if (block.data) return `[Image attached: ${await saveFile(dir, block.mimeType, Buffer.from(block.data, "base64"))}]`;
   if (block.uri?.startsWith("file:")) return `[Image attached: ${fileURLToPath(block.uri)}]`;
   if (block.uri && /^https?:/.test(block.uri)) {
     const res = await fetch(block.uri);
     if (!res.ok) throw new Error(`Failed to fetch image ${block.uri}: ${res.status}`);
     const mimeType = res.headers.get("content-type")?.split(";")[0] || block.mimeType;
-    return `[Image attached: ${await saveFile(dir, index, mimeType, Buffer.from(await res.arrayBuffer()))}]`;
+    return `[Image attached: ${await saveFile(dir, mimeType, Buffer.from(await res.arrayBuffer()))}]`;
   }
   return `[Image unavailable: ${block.uri ?? "no data"}]`;
 }
 
-async function blockText(block: acp.ContentBlock, dir: AttachmentDir, index: number): Promise<string> {
+async function blockText(block: acp.ContentBlock, dir: AttachmentDir): Promise<string> {
   switch (block.type) {
     case "text":
       return block.text;
     case "image":
-      return imageText(block, dir, index);
+      return imageText(block, dir);
     case "resource_link":
       return `[Resource: ${block.name} (${block.uri.startsWith("file:") ? fileURLToPath(block.uri) : block.uri})]`;
     case "resource": {
       const r = block.resource;
       if ("text" in r) return `<resource uri="${r.uri}">\n${r.text}\n</resource>`;
-      return `[Resource ${r.uri} saved to: ${await saveFile(dir, index, r.mimeType ?? undefined, Buffer.from(r.blob, "base64"))}]`;
+      return `[Resource ${r.uri} saved to: ${await saveFile(dir, r.mimeType ?? undefined, Buffer.from(r.blob, "base64"))}]`;
     }
     default:
       return "";
@@ -83,7 +84,7 @@ async function attachmentsText(blocks: acp.ContentBlock[], dir: AttachmentDir): 
   for (const [index, block] of blocks.entries()) {
     const prev = blocks[index - 1];
     if (prev && (prev.type !== "text" || block.type !== "text")) out += "\n";
-    out += await blockText(block, dir, index);
+    out += await blockText(block, dir);
   }
   return out;
 }

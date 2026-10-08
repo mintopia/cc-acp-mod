@@ -37,3 +37,16 @@ test("images are saved to a session dir, resources inlined, caps advertised, fil
   await h.agent.close();
   expect(existsSync(path)).toBe(false);
 });
+
+test("attachments from separate prompts in one session never share a path", async () => {
+  const h = harness();
+  const { sessionId } = await h.agent.newSession({ cwd: "/tmp", mcpServers: [] });
+  const img = (b: string) => ({ sessionId, prompt: [{ type: "image" as const, data: Buffer.from(b).toString("base64"), mimeType: "image/png" }] });
+  void h.agent.prompt(img("first"));
+  void h.agent.prompt(img("second"));
+  await new Promise((r) => setTimeout(r, 20));
+  await h.agent.cancel({ sessionId });
+  const paths = h.sent.filter((c) => c.type === "prompt").map((c) => /\[Image attached: (.+?)\]/.exec((c as { text: string }).text)![1]!);
+  expect(readFileSync(paths[0]!, "utf8")).toBe("first");
+  await h.agent.close();
+});
