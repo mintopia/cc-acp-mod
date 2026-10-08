@@ -2,9 +2,11 @@ import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 
 type Handler = (...args: any[]) => any;
 
+const MOD_ENTRY: string = "../mod/hooks/register.js";
+
 async function setup(idleMs: string) {
   vi.resetModules();
-  const { register } = await import("../mod/hooks/register.js");
+  const { register } = (await import(MOD_ENTRY)) as { register: (on: Handler) => void };
   const handlers = new Map<string, Handler>();
   const ran: string[][] = [];
   const timers: Array<{ at: number; fn: () => void }> = [];
