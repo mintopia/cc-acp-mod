@@ -8,12 +8,14 @@ type Event =
   | { type: 'turn_started'; turnId: string }
   | { type: 'chunk'; kind: 'text'; text: string }
   | { type: 'turn_completed'; reason: string }
+  | { type: 'model_changed'; id: string }
 
 let outbox: Event[] = []
 let flushing = false
 let connected = false
 let socketPath: string | undefined
 let started = false
+let lastModel: string | undefined
 
 function post($: any, path: string, body: unknown) {
   return $.http.fetch(`http://adapter${path}`, {
@@ -49,9 +51,24 @@ function emit($: any, event: Event) {
   void flush($)
 }
 
-function runCommand($: any, command: { type: string; text?: string }) {
+async function reportModel($: any): Promise<void> {
+  try {
+    const id = await $.session.model()
+    if (typeof id === 'string' && id !== lastModel) {
+      lastModel = id
+      emit($, { type: 'model_changed', id })
+    }
+  } catch {}
+}
+
+function runCommand($: any, command: { type: string; text?: string; id?: string }) {
   if (command.type === 'prompt' && command.text !== undefined) {
     void $.prompt.submit({ text: command.text }).catch(() => emit($, { type: 'turn_completed', reason: 'error' }))
+  } else if (command.type === 'set_model' && command.id !== undefined) {
+    void $.command
+      .run({ command: 'model', args: command.id })
+      .then(() => reportModel($))
+      .catch(() => reportModel($))
   }
 }
 
@@ -85,11 +102,13 @@ export const register: Register = (on) => {
       const sessionId = await $.session.id()
       socketPath = `${dir}/${sessionId}.sock`
       $.clock.after(0, () => connect($))
+      $.clock.after(0, () => reportModel($))
     }
     return next(e)
   })
 
   on('turn.start', async ($, e, next) => {
+    void reportModel($)
     emit($, { type: 'turn_started', turnId: e.turnId })
     return next(e)
   })
@@ -105,6 +124,7 @@ export const register: Register = (on) => {
 
   on('turn.complete', async ($, e, next) => {
     if (e.agentId === undefined) emit($, { type: 'turn_completed', reason: e.reason })
+    void reportModel($)
     return next(e)
   })
 }

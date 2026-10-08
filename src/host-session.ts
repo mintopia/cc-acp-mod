@@ -3,8 +3,9 @@ import { fileURLToPath } from "node:url";
 import { SessionChannel } from "./channel.js";
 import { checkClaudeVersion, checkTmux, trustDirectory } from "./launch.js";
 import { socketDir, socketPath } from "./paths.js";
+import { initialModelId } from "./models.js";
 import type { ModEvent } from "./protocol.js";
-import { forwardedEnv, killSession, startSession } from "./tmux.js";
+import { forwardedEnv, killSession, sendEnter, startSession } from "./tmux.js";
 
 export const MOD_DIR = join(dirname(fileURLToPath(import.meta.url)), "..", "mod");
 
@@ -33,7 +34,7 @@ export async function launchHostSession(opts: {
   await channel.listen();
 
   const argv = [executable, "--plugin-dir", MOD_DIR, "--session-id", opts.sessionId];
-  if (env.ANTHROPIC_MODEL) argv.push("--model", env.ANTHROPIC_MODEL);
+  argv.push(...modelArgs(env));
 
   try {
     await startSession({
@@ -57,4 +58,29 @@ export async function launchHostSession(opts: {
 export async function stopHostSession(host: HostSession): Promise<void> {
   await killSession(host.sessionId);
   await host.channel.close();
+}
+
+export function modelArgs(env: NodeJS.ProcessEnv): string[] {
+  const id = initialModelId(env);
+  return id === "default" ? [] : ["--model", id];
+}
+
+const CONFIRM_AFTER_MS = 1_000;
+const SET_MODEL_TIMEOUT_MS = 30_000;
+
+/** `/model` mid-conversation opens a confirmation dialog the Mod cannot dismiss, so press Enter until the Mod reports the change. */
+export async function switchModel(
+  host: HostSession,
+  id: string,
+  changed: Promise<unknown>,
+): Promise<void> {
+  host.channel.send({ type: "set_model", id });
+  const deadline = Date.now() + SET_MODEL_TIMEOUT_MS;
+  let done = false;
+  void changed.then(() => (done = true));
+  while (!done && Date.now() < deadline) {
+    await new Promise((r) => setTimeout(r, CONFIRM_AFTER_MS));
+    if (!done) await sendEnter(host.sessionId).catch(() => {});
+  }
+  if (!done) throw new Error(`Model did not switch to ${id}`);
 }

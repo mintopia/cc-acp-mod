@@ -6,13 +6,14 @@ export interface Hello {
   modVersion: string;
 }
 
-export type Command = { type: "prompt"; text: string };
+export type Command = { type: "prompt"; text: string } | { type: "set_model"; id: string };
 
 export type TurnReason = "answer" | "aborted" | "refusal" | "error";
 
 export type ModEvent =
   | { type: "turn_started"; turnId: string }
   | { type: "chunk"; kind: "text"; text: string }
-  | { type: "turn_completed"; reason: TurnReason };
+  | { type: "turn_completed"; reason: TurnReason }
+  | { type: "model_changed"; id: string };
 
 export const POLL_WINDOW_MS = 20_000;
