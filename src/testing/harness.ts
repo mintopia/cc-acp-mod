@@ -55,7 +55,6 @@ export interface Harness {
   /** Every message the Adapter wrote, in order; violations are reported by close(). */
   readonly emitted: JsonRpcMessage[];
   readonly mods: Map<string, FakeMod>;
-  /** Whether each launched Host Session was started with resume. */
   readonly resumed: Map<string, boolean>;
   request<T = unknown>(method: string, params?: unknown): Promise<T>;
   notify(method: string, params?: unknown): Promise<void>;
