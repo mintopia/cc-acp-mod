@@ -150,6 +150,7 @@ export class SessionChannel {
       this.server?.unref();
       return;
     }
+    this.server?.closeAllConnections();
     await new Promise<void>((resolve) => (this.server ? this.server.close(() => resolve()) : resolve()));
     await rm(this.path, { force: true });
   }

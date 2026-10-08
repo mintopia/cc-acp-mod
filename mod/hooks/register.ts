@@ -177,9 +177,10 @@ async function reportTitle($: any): Promise<void> {
   try {
     const first = (await $.session.messages()).find((m: any) => m.role === 'user' && typeof m.text === 'string' && m.text.trim() !== '')
     if (!first) return
-    const line = first.text.trim().split('\n')[0].replace(/\s+/g, ' ')
-    lastTitle = line.length > TITLE_MAX ? `${line.slice(0, TITLE_MAX - 1)}…` : line
-    emit($, { type: 'title', title: lastTitle })
+    const line = (first.text.trim().split('\n')[0] ?? '').replace(/\s+/g, ' ')
+    const title = line.length > TITLE_MAX ? `${line.slice(0, TITLE_MAX - 1)}…` : line
+    lastTitle = title
+    emit($, { type: 'title', title })
   } catch {}
 }
 
@@ -336,7 +337,7 @@ export const register: Register = (on) => {
   })
 
   on('command.run', async ($, e, next) => {
-    if (probeCommand === undefined || e.command !== probeCommand) return next(e)
+    if (probeCommand === undefined || probeFile === undefined || e.command !== probeCommand) return next(e)
     probing = true
     try {
       probeCount += 1
@@ -348,11 +349,6 @@ export const register: Register = (on) => {
   })
 
   on('classic.UserPromptSubmit', async ($, e, next) => {
-    reportMode($, e)
-    return next(e)
-  })
-
-  on('classic.PermissionRequest', async ($, e, next) => {
     reportMode($, e)
     return next(e)
   })
@@ -373,7 +369,7 @@ export const register: Register = (on) => {
   })
 
   on('turn.start', async ($, e, next) => {
-    if (e.agentId === undefined) turnActive = true
+    if ((e as { agentId?: string }).agentId === undefined) turnActive = true
     void reportModel($)
     emit($, { type: 'turn_started', turnId: e.turnId })
     return next(e)
@@ -399,6 +395,7 @@ export const register: Register = (on) => {
   })
 
   on('classic.PermissionRequest', async ($: any, e: any, next: any) => {
+    reportMode($, e)
     const input = e.tool_input
     if (e.tool_name === 'AskUserQuestion' && Array.isArray(input?.questions)) {
       const requestId = `q${++nextRequest}`
