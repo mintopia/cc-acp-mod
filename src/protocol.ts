@@ -25,6 +25,8 @@ export interface SlashCommand {
   terminalOnly?: boolean;
 }
 
+export type PermissionDecision = "allow_once" | "allow_with_updates" | "reject";
+
 export type TurnReason = "answer" | "aborted" | "refusal" | "error";
 
 export type ModEvent =
@@ -38,6 +40,14 @@ export type ModEvent =
   | { type: "usage"; inputTokens: number; outputTokens: number; cachedReadTokens?: number; cachedWriteTokens?: number; contextUsed: number; contextSize: number }
   | { type: "title"; title: string }
   | { type: "commands"; commands: SlashCommand[] }
-  | { type: "ask_question"; requestId: string; questions: AskQuestion[] };
+  | { type: "ask_question"; requestId: string; questions: AskQuestion[] }
+  | {
+      type: "permission_request";
+      requestId: string;
+      tool: string;
+      input: Record<string, unknown>;
+      toolUseId?: string;
+      suggestions?: unknown[];
+    };
 
 export const POLL_WINDOW_MS = 20_000;

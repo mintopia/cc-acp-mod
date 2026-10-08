@@ -377,3 +377,66 @@ describe("terminal login methods", () => {
     expect((await init(true, true)).authMethods ?? []).toEqual([]);
   });
 });
+
+function permissionHarness(pick: (req: any) => Promise<any>) {
+  const answers: [string, string][] = [];
+  const requests: any[] = [];
+  let emit!: (e: ModEvent) => void;
+  const sent: Command[] = [];
+  const launch: HostLauncher = async ({ sessionId, onEvent }) => {
+    emit = onEvent;
+    return {
+      sessionId,
+      channel: { send: (c) => void sent.push(c), close: async () => {}, answerPermission: (id, d) => void answers.push([id, d]) },
+    };
+  };
+  const agent = new CcAcpAgent(
+    { sessionUpdate: async () => {}, requestPermission: (p) => (requests.push(p), pick(p)) },
+    "0",
+    launch,
+  );
+  const request = { type: "permission_request" as const, requestId: "r1", tool: "Bash", input: { command: "ls" }, toolUseId: "t1" };
+  return { agent, answers, requests, sent, emit: (e: ModEvent) => emit(e), request };
+}
+
+test.each([
+  ["allow-once", "allow_once"],
+  ["allow-with-updates", "allow_with_updates"],
+  ["reject", "reject"],
+])("permission option %s maps to %s", async (optionId, decision) => {
+  const h = permissionHarness(async () => ({ outcome: { outcome: "selected", optionId } }));
+  const { sessionId } = await h.agent.newSession({ cwd: "/", mcpServers: [] });
+  h.emit(h.request);
+  await tick();
+  expect(h.requests[0]).toMatchObject({
+    sessionId,
+    toolCall: { toolCallId: "t1" },
+    options: [
+      { optionId: "allow-once", kind: "allow_once" },
+      { optionId: "allow-with-updates", kind: "allow_always" },
+      { optionId: "reject", kind: "reject_once" },
+    ],
+  });
+  expect(h.answers).toEqual([["r1", decision]]);
+});
+
+test("a pending permission request waits, and session/cancel denies it", async () => {
+  const h = permissionHarness(() => new Promise(() => {}));
+  const { sessionId } = await h.agent.newSession({ cwd: "/", mcpServers: [] });
+  const p = h.agent.prompt(promptOf(sessionId, "a"));
+  h.emit(h.request);
+  await tick();
+  expect(h.answers).toEqual([]);
+  await h.agent.cancel({ sessionId });
+  expect(h.answers).toEqual([["r1", "reject"]]);
+  h.emit({ type: "turn_completed", reason: "aborted" });
+  expect(await p).toEqual({ stopReason: "cancelled" });
+});
+
+test("a cancelled outcome from the client denies the tool", async () => {
+  const h = permissionHarness(async () => ({ outcome: { outcome: "cancelled" } }));
+  await h.agent.newSession({ cwd: "/", mcpServers: [] });
+  h.emit(h.request);
+  await tick();
+  expect(h.answers).toEqual([["r1", "reject"]]);
+});

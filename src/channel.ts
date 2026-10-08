@@ -1,7 +1,7 @@
 import { chmod, mkdir, rm } from "node:fs/promises";
 import { createServer, type IncomingMessage, type Server, type ServerResponse } from "node:http";
 import { dirname } from "node:path";
-import { POLL_WINDOW_MS, type Command, type Hello, type ModEvent } from "./protocol.js";
+import { POLL_WINDOW_MS, type Command, type Hello, type ModEvent, type PermissionDecision } from "./protocol.js";
 
 type Waiter = { resolve: (cmd: Command | null) => void; timer: NodeJS.Timeout };
 
@@ -11,6 +11,8 @@ export class SessionChannel {
   private readonly helloPromise: Promise<Hello>;
   private readonly commands: Command[] = [];
   private waiter?: Waiter;
+  private readonly answers = new Map<string, PermissionDecision>();
+  private readonly answerWaiters = new Map<string, { resolve: (d: PermissionDecision | null) => void; timer: NodeJS.Timeout }>();
   onEvent: (event: ModEvent) => void = () => {};
 
   constructor(readonly path: string, private readonly pollWindowMs = POLL_WINDOW_MS) {
@@ -52,7 +54,23 @@ export class SessionChannel {
     }
   }
 
+  answerPermission(requestId: string, decision: PermissionDecision): void {
+    const waiting = this.answerWaiters.get(requestId);
+    if (waiting) {
+      this.answerWaiters.delete(requestId);
+      clearTimeout(waiting.timer);
+      waiting.resolve(decision);
+    } else {
+      this.answers.set(requestId, decision);
+    }
+  }
+
   async close(): Promise<void> {
+    for (const { resolve, timer } of this.answerWaiters.values()) {
+      clearTimeout(timer);
+      resolve(null);
+    }
+    this.answerWaiters.clear();
     this.waiter?.resolve(null);
     if (this.waiter) clearTimeout(this.waiter.timer);
     this.waiter = undefined;
@@ -75,10 +93,35 @@ export class SessionChannel {
         const command = await this.nextCommand();
         return command ? reply(res, 200, command) : reply(res, 204);
       }
+      if (req.method === "GET" && req.url?.startsWith("/permission?")) {
+        const requestId = new URL(req.url, "http://adapter").searchParams.get("id") ?? "";
+        const decision = await this.nextAnswer(requestId);
+        return decision ? reply(res, 200, { decision }) : reply(res, 204);
+      }
       reply(res, 404);
     } catch {
       reply(res, 400);
     }
+  }
+
+  private nextAnswer(requestId: string): Promise<PermissionDecision | null> {
+    const ready = this.answers.get(requestId);
+    if (ready) {
+      this.answers.delete(requestId);
+      return Promise.resolve(ready);
+    }
+    const previous = this.answerWaiters.get(requestId);
+    if (previous) {
+      clearTimeout(previous.timer);
+      previous.resolve(null);
+    }
+    return new Promise((resolve) => {
+      const timer = setTimeout(() => {
+        this.answerWaiters.delete(requestId);
+        resolve(null);
+      }, this.pollWindowMs);
+      this.answerWaiters.set(requestId, { resolve, timer });
+    });
   }
 
   private nextCommand(): Promise<Command | null> {
