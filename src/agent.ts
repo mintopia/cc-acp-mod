@@ -1,6 +1,7 @@
 import { randomUUID } from "node:crypto";
 import * as acp from "@agentclientprotocol/sdk";
 import { formAnswers, questionForm } from "./ask-user-question.js";
+import { McpProxy, type HostMcpServer } from "./mcp-proxy.js";
 import { launchHostSession, switchModel, type HostSession } from "./host-session.js";
 import { MODEL_CONFIG_ID, buildModelList, initialModelId, type ModelInfo } from "./models.js";
 import { SessionAttachments, promptText } from "./prompt-content.js";
@@ -17,6 +18,7 @@ export type HostLauncher = (opts: {
   cwd: string;
   env?: NodeJS.ProcessEnv;
   disallowedTools?: string[];
+  mcpServers?: Record<string, HostMcpServer>;
   onEvent: (event: ModEvent) => void;
 }) => Promise<Pick<HostSession, "sessionId"> & { steering?: boolean; channel: Pick<HostSession["channel"], "send" | "close"> }>;
 
@@ -91,6 +93,7 @@ export class CcAcpAgent {
   private readonly sessions = new Map<string, Session>();
   private formElicitation = false;
   private terminalOutput = false;
+  private readonly mcpProxy = new McpProxy();
 
   constructor(
     private readonly client: UpdateSink,
@@ -104,7 +107,7 @@ export class CcAcpAgent {
     return {
       protocolVersion: acp.PROTOCOL_VERSION,
       agentInfo: { name: "cc-acp", title: "Claude Code (cc-acp)", version: this.version },
-      agentCapabilities: { promptCapabilities: { image: true } },
+      agentCapabilities: { promptCapabilities: { image: true }, mcpCapabilities: { http: true, sse: true } },
     };
   }
 
@@ -112,15 +115,22 @@ export class CcAcpAgent {
     const sessionId = randomUUID();
     const env = process.env;
     let events: Promise<void> = Promise.resolve();
+    await this.mcpProxy.start();
+    const mcpServers = this.mcpProxy.register(sessionId, params.mcpServers.map((s) => s.name));
+    this.mcpProxy.setClient(sessionId, params.mcpServers);
     const host = await this.launch({
       sessionId,
       cwd: params.cwd,
       env,
+      mcpServers,
       disallowedTools: this.formElicitation ? [] : ["AskUserQuestion"],
       onEvent: (event) => {
         if (event.type === "ask_question") return void this.askQuestion(sessionId, event);
         events = events.then(() => this.onEvent(sessionId, event)).catch(() => {});
       },
+    }).catch((err) => {
+      this.mcpProxy.unregister(sessionId);
+      throw err;
     });
     const session: Session = {
       host,
@@ -217,6 +227,7 @@ export class CcAcpAgent {
       await s.attachments.cleanup();
     }));
     this.sessions.clear();
+    await this.mcpProxy.close();
   }
 
   private startNext(session: Session): void {

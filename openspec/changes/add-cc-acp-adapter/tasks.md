@@ -17,7 +17,7 @@ Each task maps to one GitHub issue (child of the epic). "Blocked by" lists task 
 - [ ] 1.12 Reattach — blocked by: 1.6, 1.11
 - [ ] 1.13 Mod version handshake and skew Revive — blocked by: 1.12
 - [ ] 1.14 Idle reaping — blocked by: 1.12
-- [ ] 1.15 MCP proxy — blocked by: 1.2
+- [x] 1.15 MCP proxy — blocked by: 1.2
 - [ ] 1.16 MCP credentials across Reattach — blocked by: 1.12, 1.15
 - [ ] 1.17 Launch hardening — blocked by: 1.2
 - [ ] 1.18 Tier 1 done: package and validate with Harmonic — blocked by: 1.3, 1.5, 1.6, 1.7, 1.8, 1.9, 1.10, 1.11, 1.15, 1.17
