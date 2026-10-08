@@ -1,6 +1,7 @@
 import { dirname, join } from "node:path";
 import { fileURLToPath } from "node:url";
 import { SessionChannel } from "./channel.js";
+import type { HostMcpServer } from "./mcp-proxy.js";
 import { checkClaudeVersion, checkTmux, trustDirectory } from "./launch.js";
 import { socketDir, socketPath } from "./paths.js";
 import { initialModelId } from "./models.js";
@@ -22,6 +23,7 @@ export async function launchHostSession(opts: {
   cwd: string;
   env?: NodeJS.ProcessEnv;
   disallowedTools?: string[];
+  mcpServers?: Record<string, HostMcpServer>;
   onEvent: (event: ModEvent) => void;
   startupTimeoutMs?: number;
 }): Promise<HostSession> {
@@ -37,6 +39,7 @@ export async function launchHostSession(opts: {
 
   const argv = [executable, "--plugin-dir", MOD_DIR, "--session-id", opts.sessionId];
   argv.push(...modelArgs(env));
+  argv.push(...mcpArgs(opts.mcpServers));
   if (opts.disallowedTools?.length) argv.push("--disallowed-tools", opts.disallowedTools.join(","));
 
   let hello: Hello;
@@ -67,6 +70,10 @@ export async function stopHostSession(host: HostSession): Promise<void> {
 export function modelArgs(env: NodeJS.ProcessEnv): string[] {
   const id = initialModelId(env);
   return id === "default" ? [] : ["--model", id];
+}
+
+export function mcpArgs(servers: Record<string, HostMcpServer> | undefined): string[] {
+  return servers && Object.keys(servers).length ? ["--mcp-config", JSON.stringify({ mcpServers: servers })] : [];
 }
 
 const CONFIRM_AFTER_MS = 1_000;

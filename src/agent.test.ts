@@ -301,3 +301,25 @@ test("title event emits session_info_update", async () => {
   await tick();
   expect(h.updates[0]).toMatchObject({ sessionUpdate: "session_info_update", title: "Fix the bug" });
 });
+
+test("initialize advertises http and sse MCP support", async () => {
+  const h = harness();
+  const res = await h.agent.initialize({ protocolVersion: 1 });
+  expect(res.agentCapabilities?.mcpCapabilities).toEqual({ http: true, sse: true });
+});
+
+test("Host Session is launched with proxy endpoints, never the Client's URLs", async () => {
+  let launched: Parameters<HostLauncher>[0] | undefined;
+  const agent = new CcAcpAgent({ sessionUpdate: async () => {} }, "0", async (opts) => {
+    launched = opts;
+    return { sessionId: opts.sessionId, channel: { send: () => {}, close: async () => {} } };
+  });
+  await agent.newSession({
+    cwd: "/",
+    mcpServers: [{ type: "http", name: "harmonic", url: "https://upstream.example/mcp", headers: [{ name: "authorization", value: "Bearer secret" }] }],
+  });
+  const url = launched!.mcpServers!.harmonic!.url;
+  expect(url).toMatch(/^http:\/\/127\.0\.0\.1:\d+\//);
+  expect(JSON.stringify(launched!.mcpServers)).not.toMatch(/upstream\.example|secret/);
+  await agent.close();
+});
