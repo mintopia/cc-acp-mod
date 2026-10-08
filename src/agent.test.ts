@@ -72,3 +72,49 @@ test("cancelling a queued prompt removes it without touching the running turn", 
   expect(await first).toEqual({ stopReason: "end_turn" });
   expect(h.sent).toEqual([{ type: "prompt", text: "one" }]);
 });
+
+function recordingHarness() {
+  const updates: any[] = [];
+  let emit!: (e: ModEvent) => void;
+  const launch: HostLauncher = async ({ sessionId, onEvent }) => {
+    emit = onEvent;
+    return { sessionId, channel: { send: () => {}, close: async () => {} } };
+  };
+  const agent = new CcAcpAgent({ sessionUpdate: async (p) => void updates.push(p.update) }, "0", launch);
+  return { agent, updates, emit: (e: ModEvent) => emit(e) };
+}
+
+test("thinking chunks become agent_thought_chunk", async () => {
+  const h = recordingHarness();
+  await h.agent.newSession({ cwd: "/", mcpServers: [] });
+  h.emit({ type: "chunk", kind: "thinking", text: "hm" });
+  await tick();
+  expect(h.updates).toEqual([{ sessionUpdate: "agent_thought_chunk", content: { type: "text", text: "hm" } }]);
+});
+
+test("tool use produces tool_call with kind, title and toolName, then completed/failed updates", async () => {
+  const h = recordingHarness();
+  await h.agent.newSession({ cwd: "/", mcpServers: [] });
+  h.emit({ type: "tool_started", toolUseId: "t1", tool: "Edit", input: { file_path: "src/a.ts" } });
+  h.emit({ type: "tool_finished", toolUseId: "t1", isError: false });
+  h.emit({ type: "tool_finished", toolUseId: "t2", isError: true });
+  await tick();
+  expect(h.updates[0]).toMatchObject({
+    sessionUpdate: "tool_call",
+    toolCallId: "t1",
+    kind: "edit",
+    title: "Edit src/a.ts",
+    status: "in_progress",
+    _meta: { claudeCode: { toolName: "Edit" } },
+  });
+  expect(h.updates[1]).toEqual({ sessionUpdate: "tool_call_update", toolCallId: "t1", status: "completed" });
+  expect(h.updates[2]).toEqual({ sessionUpdate: "tool_call_update", toolCallId: "t2", status: "failed" });
+});
+
+test("TodoWrite produces a plan update", async () => {
+  const h = recordingHarness();
+  await h.agent.newSession({ cwd: "/", mcpServers: [] });
+  h.emit({ type: "tool_started", toolUseId: "t1", tool: "TodoWrite", input: { todos: [{ content: "a", status: "pending", activeForm: "A" }] } });
+  await tick();
+  expect(h.updates[1]).toEqual({ sessionUpdate: "plan", entries: [{ content: "a", status: "pending", priority: "medium" }] });
+});

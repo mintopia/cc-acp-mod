@@ -1,6 +1,7 @@
 import { randomUUID } from "node:crypto";
 import * as acp from "@agentclientprotocol/sdk";
 import { launchHostSession, type HostSession } from "./host-session.js";
+import { planEntries, toolInfo } from "./tool-mapping.js";
 import type { ModEvent, TurnReason } from "./protocol.js";
 
 export interface UpdateSink {
@@ -111,7 +112,34 @@ export class CcAcpAgent {
     if (event.type === "chunk") {
       await this.client.sessionUpdate({
         sessionId,
-        update: { sessionUpdate: "agent_message_chunk", content: { type: "text", text: event.text } },
+        update: {
+          sessionUpdate: event.kind === "thinking" ? "agent_thought_chunk" : "agent_message_chunk",
+          content: { type: "text", text: event.text },
+        },
+      });
+    } else if (event.type === "tool_started") {
+      const info = toolInfo(event.tool, event.input);
+      await this.client.sessionUpdate({
+        sessionId,
+        update: {
+          sessionUpdate: "tool_call",
+          toolCallId: event.toolUseId,
+          status: "in_progress",
+          rawInput: event.input,
+          _meta: { claudeCode: { toolName: event.tool } },
+          ...info,
+        },
+      });
+      const entries = planEntries(event.tool, event.input);
+      if (entries) await this.client.sessionUpdate({ sessionId, update: { sessionUpdate: "plan", entries } });
+    } else if (event.type === "tool_finished") {
+      await this.client.sessionUpdate({
+        sessionId,
+        update: {
+          sessionUpdate: "tool_call_update",
+          toolCallId: event.toolUseId,
+          status: event.isError ? "failed" : "completed",
+        },
       });
     } else if (event.type === "turn_completed" && session?.current) {
       const done = session.current;
