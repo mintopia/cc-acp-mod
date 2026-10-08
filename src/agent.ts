@@ -1,6 +1,6 @@
 import { randomUUID } from "node:crypto";
 import * as acp from "@agentclientprotocol/sdk";
-import { launchHostSession, stopHostSession, type HostSession } from "./host-session.js";
+import { launchHostSession, type HostSession } from "./host-session.js";
 import type { ModEvent, TurnReason } from "./protocol.js";
 
 interface PendingPrompt {
@@ -62,7 +62,7 @@ export class CcAcpAgent implements acp.Agent {
   async cancel(): Promise<void> {}
 
   async close(): Promise<void> {
-    await Promise.all([...this.sessions.values()].map((s) => stopHostSession(s.host)));
+    await Promise.all([...this.sessions.values()].map((s) => s.host.channel.close()));
     this.sessions.clear();
   }
 
