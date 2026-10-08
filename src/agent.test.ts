@@ -1,4 +1,4 @@
-import { expect, test } from "vitest";
+import { describe, expect, test } from "vitest";
 import { CcAcpAgent, type HostLauncher } from "./agent.js";
 import type { Command, ModEvent } from "./protocol.js";
 
@@ -351,4 +351,29 @@ test("commands event becomes available_commands_update without terminal-only com
       ],
     },
   ]);
+});
+
+describe("terminal login methods", () => {
+  const launch: HostLauncher = async (opts) => ({ sessionId: opts.sessionId, channel: { send: () => {}, close: async () => {} } });
+  const init = (loggedIn: boolean, terminalAuth: boolean) =>
+    new CcAcpAgent({ sessionUpdate: async () => {} }, "0", launch, async () => loggedIn).initialize({
+      protocolVersion: 1,
+      clientCapabilities: terminalAuth ? { _meta: { "terminal-auth": true } } : {},
+    });
+
+  test("advertised when logged out and the Client supports terminal auth", async () => {
+    const res = await init(false, true);
+    expect(res.authMethods?.map((m) => (m._meta as any)["terminal-auth"].args)).toEqual([
+      ["auth", "login", "--claudeai"],
+      ["auth", "login", "--console"],
+    ]);
+  });
+
+  test("not advertised without Client terminal auth support", async () => {
+    expect((await init(false, false)).authMethods ?? []).toEqual([]);
+  });
+
+  test("not advertised when already logged in", async () => {
+    expect((await init(true, true)).authMethods ?? []).toEqual([]);
+  });
 });
