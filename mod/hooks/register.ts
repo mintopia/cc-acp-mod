@@ -352,11 +352,6 @@ export const register: Register = (on) => {
     return next(e)
   })
 
-  on('classic.PermissionRequest', async ($, e, next) => {
-    reportMode($, e)
-    return next(e)
-  })
-
   on('classic.PostToolUse', async ($, e, next) => {
     reportMode($, e)
     return next(e)
@@ -399,6 +394,7 @@ export const register: Register = (on) => {
   })
 
   on('classic.PermissionRequest', async ($: any, e: any, next: any) => {
+    reportMode($, e)
     const input = e.tool_input
     if (e.tool_name === 'AskUserQuestion' && Array.isArray(input?.questions)) {
       const requestId = `q${++nextRequest}`

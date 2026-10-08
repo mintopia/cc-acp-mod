@@ -28,6 +28,8 @@ export function serveAgent(stream: acp.Stream, version: string, launch: HostLaun
     .onRequest(AGENT_METHODS.session_delete, (ctx) => agent!.deleteSession(ctx.params))
     .onRequest(AGENT_METHODS.session_fork, (ctx) => agent!.forkSession(ctx.params))
     .onRequest(AGENT_METHODS.authenticate, async () => (await agent!.authenticate(), {}))
+    .onRequest(AGENT_METHODS.session_set_mode, async (ctx) => (await agent!.setSessionMode(ctx.params), {}))
+    .onRequest(AGENT_METHODS.session_set_config_option, (ctx) => agent!.setSessionConfigOption(ctx.params))
     .onRequest(AGENT_METHODS.session_prompt, (ctx) => agent!.prompt(ctx.params, ctx.signal))
     .onRequest("_session/steering", (params) => params as Parameters<CcAcpAgent["steer"]>[0], (ctx) => agent!.steer(ctx.params))
     .onNotification(AGENT_METHODS.session_cancel, (ctx) => agent!.cancel(ctx.params))
