@@ -188,3 +188,59 @@ test("effort and fast config options are offered, applied via the Host Session a
   expect((await f).configOptions.find((o) => o.id === "fast")).toMatchObject({ currentValue: "on" });
   await expect(agent.setSessionConfigOption({ sessionId, configId: "effort", value: "bogus" })).rejects.toThrow();
 });
+
+function elicitHarness(opts: { form: boolean; respond?: (p: any) => any }) {
+  const sent: Command[] = [];
+  const launched: { disallowedTools?: string[] }[] = [];
+  const asked: any[] = [];
+  let emit!: (e: ModEvent) => void;
+  const launch: HostLauncher = async ({ sessionId, onEvent, disallowedTools }) => {
+    emit = onEvent;
+    launched.push({ disallowedTools });
+    return { sessionId, channel: { send: (c) => void sent.push(c), close: async () => {} } };
+  };
+  const agent = new CcAcpAgent(
+    {
+      sessionUpdate: async () => {},
+      createElicitation: async (p) => (asked.push(p), opts.respond?.(p) ?? { action: "accept", content: { q0: "pg" } }),
+    },
+    "0",
+    launch,
+  );
+  const init = agent.initialize({ protocolVersion: 1, clientCapabilities: opts.form ? { elicitation: { form: {} } } : {} });
+  return { agent, sent, asked, launched, init, emit: (e: ModEvent) => emit(e) };
+}
+
+const ask: ModEvent = { type: "ask_question", requestId: "r1", questions: [{ question: "Which db?", options: [{ label: "pg" }, { label: "sqlite" }] }] };
+
+test("AskUserQuestion is shown as a form elicitation and the answer returns to the Mod", async () => {
+  const h = elicitHarness({ form: true });
+  await h.init;
+  const { sessionId } = await h.agent.newSession({ cwd: "/", mcpServers: [] });
+  expect(h.launched[0].disallowedTools).toEqual([]);
+  h.emit(ask);
+  await tick();
+  expect(h.asked[0]).toMatchObject({ mode: "form", sessionId });
+  expect(h.asked[0].requestedSchema.properties.q0.oneOf.map((o: any) => o.const)).toEqual(["pg", "sqlite"]);
+  expect(h.sent).toEqual([{ type: "question_answer", requestId: "r1", answers: { "Which db?": "pg" } }]);
+});
+
+test("declined elicitation answers null", async () => {
+  const h = elicitHarness({ form: true, respond: () => ({ action: "decline" }) });
+  await h.init;
+  await h.agent.newSession({ cwd: "/", mcpServers: [] });
+  h.emit(ask);
+  await tick();
+  expect(h.sent).toEqual([{ type: "question_answer", requestId: "r1", answers: null }]);
+});
+
+test("clients without form elicitation get AskUserQuestion disallowed and never receive elicitation/create", async () => {
+  const h = elicitHarness({ form: false });
+  await h.init;
+  await h.agent.newSession({ cwd: "/", mcpServers: [] });
+  expect(h.launched[0].disallowedTools).toEqual(["AskUserQuestion"]);
+  h.emit(ask);
+  await tick();
+  expect(h.asked).toEqual([]);
+  expect(h.sent).toEqual([{ type: "question_answer", requestId: "r1", answers: null }]);
+});

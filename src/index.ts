@@ -19,7 +19,13 @@ const { AGENT_METHODS, CLIENT_METHODS } = acp;
 const conn = acp
   .agent({ name: "cc-acp" })
   .onConnect((c) => {
-    agent = new CcAcpAgent({ sessionUpdate: (p) => c.client.notify(CLIENT_METHODS.session_update, p) }, version);
+    agent = new CcAcpAgent(
+      {
+        sessionUpdate: (p) => c.client.notify(CLIENT_METHODS.session_update, p),
+        createElicitation: (p) => c.client.request(CLIENT_METHODS.elicitation_create, p),
+      },
+      version,
+    );
   })
   .onRequest(AGENT_METHODS.initialize, (ctx) => agent!.initialize(ctx.params))
   .onRequest(AGENT_METHODS.session_new, (ctx) => agent!.newSession(ctx.params))

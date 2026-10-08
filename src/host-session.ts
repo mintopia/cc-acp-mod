@@ -21,6 +21,7 @@ export async function launchHostSession(opts: {
   sessionId: string;
   cwd: string;
   env?: NodeJS.ProcessEnv;
+  disallowedTools?: string[];
   onEvent: (event: ModEvent) => void;
   startupTimeoutMs?: number;
 }): Promise<HostSession> {
@@ -36,6 +37,7 @@ export async function launchHostSession(opts: {
 
   const argv = [executable, "--plugin-dir", MOD_DIR, "--session-id", opts.sessionId];
   argv.push(...modelArgs(env));
+  if (opts.disallowedTools?.length) argv.push("--disallowed-tools", opts.disallowedTools.join(","));
 
   let hello: Hello;
   try {

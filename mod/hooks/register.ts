@@ -12,6 +12,7 @@ type Event =
   | { type: 'turn_completed'; reason: string }
   | { type: 'model_changed'; id: string }
   | { type: 'config_changed'; option: 'effort' | 'fast'; value: string }
+  | { type: 'ask_question'; requestId: string; questions: unknown[] }
 
 let outbox: Event[] = []
 let flushing = false
@@ -19,6 +20,8 @@ let connected = false
 let socketPath: string | undefined
 let started = false
 let lastModel: string | undefined
+let nextRequest = 0
+const pendingQuestions = new Map<string, (answers: Record<string, string> | null) => void>()
 
 function post($: any, path: string, body: unknown) {
   return $.http.fetch(`http://adapter${path}`, {
@@ -64,11 +67,17 @@ async function reportModel($: any): Promise<void> {
   } catch {}
 }
 
-function runCommand($: any, command: { type: string; text?: string; id?: string; value?: string }) {
+function runCommand(
+  $: any,
+  command: { type: string; text?: string; id?: string; value?: string; requestId?: string; answers?: Record<string, string> | null },
+) {
   if (command.type === 'prompt' && command.text !== undefined) {
     void $.prompt.submit({ text: command.text }).catch(() => emit($, { type: 'turn_completed', reason: 'error' }))
   } else if (command.type === 'steer' && command.text !== undefined) {
     void $.prompt.steer({ text: command.text }).catch(() => {})
+  } else if (command.type === 'question_answer' && command.requestId !== undefined) {
+    pendingQuestions.get(command.requestId)?.(command.answers ?? null)
+    pendingQuestions.delete(command.requestId)
   } else if (command.type === 'cancel') {
     void $.turn.abort().catch(() => {})
   } else if (command.type === 'set_model' && command.id !== undefined) {
@@ -146,6 +155,17 @@ export const register: Register = (on) => {
     const isError = ran.deny !== undefined || ran.isError === true
     emit($, { type: 'tool_finished', toolUseId, isError, result: isError ? undefined : ran.result })
     return ran
+  })
+
+  on('classic.PermissionRequest', async ($, e, next) => {
+    const input = (e as any).tool_input
+    if ((e as any).tool_name !== 'AskUserQuestion' || !Array.isArray(input?.questions)) return next(e)
+    const requestId = `q${++nextRequest}`
+    const answered = new Promise<Record<string, string> | null>((resolve) => pendingQuestions.set(requestId, resolve))
+    emit($, { type: 'ask_question', requestId, questions: input.questions })
+    const answers = await answered
+    if (answers === null) return { decision: { behavior: 'deny', message: 'The user declined to answer.' } }
+    return { decision: { behavior: 'allow', updatedInput: { ...input, answers } } }
   })
 
   on('turn.complete', async ($, e, next) => {
