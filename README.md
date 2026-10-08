@@ -105,6 +105,7 @@ Client <--ACP/stdio--> Adapter <--tmux keystrokes--> Host Session (claude)
 
 - cc-acp runs on Linux and macOS. On Windows it needs WSL.
 - Changing the model mid-session with `/model` opens a "Switch model?" confirmation dialog in Claude Code, and Claude Code saves the choice as your default model in `~/.claude/settings.json`. See "Spike findings" item 6 in `openspec/changes/add-cc-acp-adapter/design.md`.
+- A prompt that starts with a command that opens a panel in Claude Code, such as `/release-notes`, can't be shown to the Client. After 3 seconds the Mod closes the panel and replies that it opens an interactive panel.
 
 ## Development
 
