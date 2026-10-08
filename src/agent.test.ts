@@ -160,3 +160,31 @@ test("steering unsupported: advertised false and method not found", async () => 
   expect(res._meta).toEqual({ steering: { supported: false } });
   await expect(h.agent.steer({ sessionId: res.sessionId, prompt: [] })).rejects.toMatchObject({ code: -32601 });
 });
+
+test("effort and fast config options are offered, applied via the Host Session and reported", async () => {
+  const sent: Command[] = [];
+  const updates: any[] = [];
+  let emit!: (e: ModEvent) => void;
+  const launch: HostLauncher = async ({ sessionId, onEvent }) => {
+    emit = onEvent;
+    return { sessionId, channel: { send: (c) => void sent.push(c), close: async () => {} } };
+  };
+  const agent = new CcAcpAgent({ sessionUpdate: async (p) => void updates.push(p.update) }, "0", launch);
+  const { sessionId, configOptions } = await agent.newSession({ cwd: "/", mcpServers: [] });
+  expect(configOptions!.find((o) => o.id === "effort")).toMatchObject({ category: "thought_level", currentValue: "high" });
+  expect(configOptions!.find((o) => o.id === "fast")).toMatchObject({ currentValue: "off" });
+
+  const p = agent.setSessionConfigOption({ sessionId, configId: "effort", value: "max" });
+  await tick();
+  expect(sent).toEqual([{ type: "set_effort", value: "max" }]);
+  emit({ type: "config_changed", option: "effort", value: "max" });
+  const res = await p;
+  expect(res.configOptions.find((o) => o.id === "effort")).toMatchObject({ currentValue: "max" });
+  expect(updates.at(-1)).toMatchObject({ sessionUpdate: "config_option_update" });
+
+  const f = agent.setSessionConfigOption({ sessionId, configId: "fast", value: "on" });
+  await tick();
+  emit({ type: "config_changed", option: "fast", value: "on" });
+  expect((await f).configOptions.find((o) => o.id === "fast")).toMatchObject({ currentValue: "on" });
+  await expect(agent.setSessionConfigOption({ sessionId, configId: "effort", value: "bogus" })).rejects.toThrow();
+});

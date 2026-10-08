@@ -11,6 +11,7 @@ type Event =
   | { type: 'tool_finished'; toolUseId: string; isError: boolean; result?: unknown }
   | { type: 'turn_completed'; reason: string }
   | { type: 'model_changed'; id: string }
+  | { type: 'config_changed'; option: 'effort' | 'fast'; value: string }
 
 let outbox: Event[] = []
 let flushing = false
@@ -63,7 +64,7 @@ async function reportModel($: any): Promise<void> {
   } catch {}
 }
 
-function runCommand($: any, command: { type: string; text?: string; id?: string }) {
+function runCommand($: any, command: { type: string; text?: string; id?: string; value?: string }) {
   if (command.type === 'prompt' && command.text !== undefined) {
     void $.prompt.submit({ text: command.text }).catch(() => emit($, { type: 'turn_completed', reason: 'error' }))
   } else if (command.type === 'steer' && command.text !== undefined) {
@@ -75,6 +76,13 @@ function runCommand($: any, command: { type: string; text?: string; id?: string 
       .run({ command: 'model', args: command.id })
       .then(() => reportModel($))
       .catch(() => reportModel($))
+  } else if ((command.type === 'set_effort' || command.type === 'set_fast') && command.value !== undefined) {
+    const option = command.type === 'set_effort' ? 'effort' : 'fast'
+    const value = command.value
+    void $.command
+      .run({ command: option, args: value })
+      .then(() => emit($, { type: 'config_changed', option, value }))
+      .catch(() => {})
   }
 }
 
