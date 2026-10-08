@@ -29,6 +29,16 @@ GitHub shares one number space across issues and PRs, so a bare `#42` may be eit
 
 Create a GitHub issue.
 
+## Publishing a set of tickets
+
+When breaking work into multiple tickets (e.g. `/to-tickets`):
+
+1. **Epic first**: create an epic issue as the parent. The epic is never labelled `ready-for-agent`.
+2. **Children as sub-issues**: create each ticket in dependency order (blockers first) and link it to the epic as a GitHub sub-issue.
+3. **Native blocking**: set GitHub issue dependencies (`blocked_by`) for every blocking edge, not just a "Blocked by" line in the body.
+4. **Verify**: check every child is a sub-issue of the epic and its `blocked_by` edges match the plan.
+5. **Label last**: only after all tickets exist and all relationships are verified, apply `ready-for-agent` to the children. Never label a ticket while its blockers or parent link may still be missing, or an agent could grab it early.
+
 ## When a skill says "fetch the relevant ticket"
 
 Run `gh issue view <number> --comments`.
