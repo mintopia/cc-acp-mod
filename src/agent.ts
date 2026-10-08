@@ -7,7 +7,7 @@ import { MODEL_CONFIG_ID, buildModelList, initialModelId, type ModelInfo } from 
 import { SessionAttachments, promptText } from "./prompt-content.js";
 import { TaskPlan, bashOutput, diffContent, planEntries, toolInfo } from "./tool-mapping.js";
 import { readTranscript } from "./transcript.js";
-import type { ModEvent, TurnReason } from "./protocol.js";
+import type { ModEvent, SlashCommand, TurnReason } from "./protocol.js";
 
 export interface UpdateSink {
   sessionUpdate(params: acp.SessionNotification): Promise<void>;
@@ -45,6 +45,7 @@ interface Session {
   fast: string;
   configWaiters: Map<string, () => void>;
   attachments: SessionAttachments;
+  commands?: SlashCommand[];
 }
 
 export const EFFORT_CONFIG_ID = "effort";
@@ -102,6 +103,16 @@ const STOP_REASONS: Partial<Record<TurnReason, acp.StopReason>> = {
   refusal: "refusal",
 };
 
+function availableCommands(commands: SlashCommand[]): acp.AvailableCommand[] {
+  return commands
+    .filter((c) => !c.terminalOnly)
+    .map((c) => ({
+      name: c.name,
+      description: c.description ?? "",
+      ...(c.argumentHint ? { input: { hint: c.argumentHint } } : {}),
+    }));
+}
+
 export class CcAcpAgent {
   private readonly sessions = new Map<string, Session>();
   private formElicitation = false;
@@ -140,6 +151,7 @@ export class CcAcpAgent {
   private async startSession(sessionId: string, cwd: string, clientServers: acp.McpServer[], resume: boolean): Promise<Session> {
     const env = process.env;
     let events: Promise<void> = Promise.resolve();
+    const pendingCommands = new Map<string, SlashCommand[]>();
     await this.mcpProxy.start();
     const mcpServers = this.mcpProxy.register(sessionId, clientServers.map((s) => s.name));
     this.mcpProxy.setClient(sessionId, clientServers);
@@ -152,6 +164,7 @@ export class CcAcpAgent {
       disallowedTools: this.formElicitation ? [] : ["AskUserQuestion"],
       onEvent: (event) => {
         if (event.type === "ask_question") return void this.askQuestion(sessionId, event);
+        if (event.type === "commands" && !this.sessions.has(sessionId)) return void pendingCommands.set(sessionId, event.commands);
         events = events.then(() => this.onEvent(sessionId, event)).catch(() => {});
       },
     }).catch((err) => {
@@ -171,7 +184,10 @@ export class CcAcpAgent {
       configWaiters: new Map(),
       attachments: new SessionAttachments(sessionId, env),
     };
+    session.commands = pendingCommands.get(sessionId);
+    pendingCommands.delete(sessionId);
     this.sessions.set(sessionId, session);
+    if (session.commands) setTimeout(() => void this.sendCommands(sessionId, session.commands!).catch(() => {}), 0);
     return session;
   }
 
@@ -295,6 +311,13 @@ export class CcAcpAgent {
     session.host.channel.send({ type: "question_answer", requestId: event.requestId, answers });
   }
 
+  private sendCommands(sessionId: string, commands: SlashCommand[]): Promise<void> {
+    return this.client.sessionUpdate({
+      sessionId,
+      update: { sessionUpdate: "available_commands_update", availableCommands: availableCommands(commands) },
+    });
+  }
+
   private async onEvent(sessionId: string, event: ModEvent): Promise<void> {
     const session = this.sessions.get(sessionId);
     if (event.type === "chunk") {
@@ -333,6 +356,9 @@ export class CcAcpAgent {
         sessionId,
         update: { sessionUpdate: "usage_update", used: event.contextUsed, size: event.contextSize },
       });
+    } else if (event.type === "commands" && session) {
+      session.commands = event.commands;
+      await this.sendCommands(sessionId, event.commands);
     } else if (event.type === "title") {
       await this.client.sessionUpdate({
         sessionId,

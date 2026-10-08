@@ -15,6 +15,7 @@ type Event =
   | { type: 'config_changed'; option: 'effort' | 'fast'; value: string }
   | { type: 'usage'; inputTokens: number; outputTokens: number; cachedReadTokens?: number; cachedWriteTokens?: number; contextUsed: number; contextSize: number }
   | { type: 'title'; title: string }
+  | { type: 'commands'; commands: { name: string; description?: string; argumentHint?: string; terminalOnly?: boolean }[] }
   | { type: 'ask_question'; requestId: string; questions: unknown[] }
 
 let outbox: Event[] = []
@@ -24,6 +25,7 @@ let socketPath: string | undefined
 let started = false
 let lastModel: string | undefined
 let lastTitle: string | undefined
+let lastCommands: string | undefined
 let nextRequest = 0
 const pendingQuestions = new Map<string, (answers: Record<string, string> | null) => void>()
 
@@ -105,6 +107,25 @@ async function reportTitle($: any): Promise<void> {
   } catch {}
 }
 
+async function reportCommands($: any): Promise<void> {
+  try {
+    const list = await $.command.list()
+    if (!Array.isArray(list)) return
+    const commands = list
+      .filter((c: any) => typeof c?.name === 'string')
+      .map((c: any) => ({
+        name: c.name,
+        ...(typeof c.description === 'string' ? { description: c.description } : {}),
+        ...(typeof c.argumentHint === 'string' ? { argumentHint: c.argumentHint } : {}),
+        ...(c.terminalOnly === true || c.interactive === true || c.type === 'local-jsx' ? { terminalOnly: true } : {}),
+      }))
+    const key = JSON.stringify(commands)
+    if (key === lastCommands) return
+    lastCommands = key
+    emit($, { type: 'commands', commands })
+  } catch {}
+}
+
 function runCommand(
   $: any,
   command: { type: string; text?: string; id?: string; value?: string; requestId?: string; answers?: Record<string, string> | null },
@@ -166,6 +187,7 @@ export const register: Register = (on) => {
       socketPath = `${dir}/${sessionId}.sock`
       $.clock.after(0, () => connect($))
       $.clock.after(0, () => reportModel($))
+      $.clock.after(0, () => reportCommands($))
     }
     return next(e)
   })
@@ -213,6 +235,7 @@ export const register: Register = (on) => {
       emit($, { type: 'turn_completed', reason: e.reason })
     }
     void reportModel($)
+    void reportCommands($)
     return next(e)
   })
 }
