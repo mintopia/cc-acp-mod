@@ -24,6 +24,7 @@ export interface UpdateSink {
 export type HostLauncher = (opts: {
   sessionId: string;
   cwd: string;
+  additionalDirectories?: string[];
   env?: NodeJS.ProcessEnv;
   disallowedTools?: string[];
   mcpServers?: Record<string, HostMcpServer>;
@@ -154,13 +155,13 @@ export class CcAcpAgent {
       protocolVersion: acp.PROTOCOL_VERSION,
       authMethods: authMethods as acp.InitializeResponse["authMethods"],
       agentInfo: { name: "cc-acp", title: "Claude Code (cc-acp)", version: this.version },
-      agentCapabilities: { loadSession: true, sessionCapabilities: { fork: {}, list: {}, resume: {}, close: {}, delete: {} }, promptCapabilities: { image: true, embeddedContext: true }, mcpCapabilities: { http: true, sse: true } },
+      agentCapabilities: { loadSession: true, sessionCapabilities: { fork: {}, list: {}, resume: {}, close: {}, delete: {}, additionalDirectories: {} }, promptCapabilities: { image: true, embeddedContext: true }, mcpCapabilities: { http: true, sse: true } },
     };
   }
 
   async newSession(params: acp.NewSessionRequest): Promise<acp.NewSessionResponse> {
     const sessionId = randomUUID();
-    const session = await this.startSession(sessionId, params.cwd, params.mcpServers, false);
+    const session = await this.startSession(sessionId, params.cwd, params.mcpServers, false, undefined, params.additionalDirectories);
     return { sessionId, ...sessionState(session) };;
   }
 
@@ -169,7 +170,7 @@ export class CcAcpAgent {
     for (const update of await readTranscript(sessionId, process.env)) await this.client.sessionUpdate({ sessionId, update });
     const live = this.sessions.get(sessionId);
     if (live) this.mcpProxy.setClient(sessionId, params.mcpServers);
-    const session = live ?? (await this.startSession(sessionId, params.cwd, params.mcpServers, true));
+    const session = live ?? (await this.startSession(sessionId, params.cwd, params.mcpServers, true, undefined, params.additionalDirectories));
     return this.reattach(session, live);
   }
 
@@ -180,7 +181,7 @@ export class CcAcpAgent {
   async resumeSession(params: acp.ResumeSessionRequest): Promise<acp.ResumeSessionResponse> {
     const { sessionId } = params;
     const live = this.sessions.get(sessionId);
-    const session = live ?? (await this.startSession(sessionId, params.cwd, params.mcpServers ?? [], true));
+    const session = live ?? (await this.startSession(sessionId, params.cwd, params.mcpServers ?? [], true, undefined, params.additionalDirectories));
     return this.reattach(session, live);
   }
 
@@ -211,12 +212,12 @@ export class CcAcpAgent {
 
   async forkSession(params: acp.ForkSessionRequest): Promise<acp.ForkSessionResponse> {
     const sessionId = randomUUID();
-    const session = await this.startSession(sessionId, params.cwd, params.mcpServers ?? [], false, params.sessionId);
+    const session = await this.startSession(sessionId, params.cwd, params.mcpServers ?? [], false, params.sessionId, params.additionalDirectories);
     for (const update of await readTranscript(params.sessionId, process.env)) await this.client.sessionUpdate({ sessionId, update });
     return { sessionId, ...sessionState(session) };;
   }
 
-  private async startSession(sessionId: string, cwd: string, clientServers: acp.McpServer[], resume: boolean, forkFrom?: string): Promise<Session> {
+  private async startSession(sessionId: string, cwd: string, clientServers: acp.McpServer[], resume: boolean, forkFrom?: string, additionalDirectories?: string[]): Promise<Session> {
     const env = process.env;
     let events: Promise<void> = Promise.resolve();
     const earlyPermissions: ModEvent[] = [];
@@ -227,6 +228,7 @@ export class CcAcpAgent {
     const host = await this.launch({
       sessionId,
       cwd,
+      additionalDirectories,
       env,
       mcpServers,
       resume,

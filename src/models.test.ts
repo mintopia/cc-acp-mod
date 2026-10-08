@@ -34,3 +34,9 @@ test("modelArgs omits --model for the default model", async () => {
   expect(modelArgs({})).toEqual([]);
   expect(modelArgs({ ANTHROPIC_MODEL: "opus" })).toEqual(["--model", "opus"]);
 });
+
+test("additionalDirectories become one --add-dir per path", async () => {
+  const { addDirArgs } = await import("./host-session.js");
+  expect(addDirArgs(undefined)).toEqual([]);
+  expect(addDirArgs(["/a", "/b"])).toEqual(["--add-dir", "/a", "--add-dir", "/b"]);
+});

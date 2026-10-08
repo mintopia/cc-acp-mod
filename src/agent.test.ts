@@ -600,3 +600,21 @@ test("when displaced by a newer Owner the session ends: the running prompt rejec
   await expect(p).rejects.toThrow(/taken over/);
   await expect(agent.prompt(promptOf(sessionId, "b"))).rejects.toThrow(/Unknown session/);
 });
+
+test("additionalDirectories reach the launcher on new, load, resume and fork, and initialize advertises support", async () => {
+  const seen: (string[] | undefined)[] = [];
+  const modes = resolveModes([], {}, false);
+  const launch: HostLauncher = async ({ sessionId, additionalDirectories }) => {
+    seen.push(additionalDirectories);
+    return { sessionId, modes, mode: new ModeTracker(modes.initialMode), channel: { send: () => {}, close: async () => {} } };
+  };
+  const agent = new CcAcpAgent({ sessionUpdate: async () => {} }, "0", launch);
+  const init = await agent.initialize({ protocolVersion: 1 });
+  expect(init.agentCapabilities?.sessionCapabilities?.additionalDirectories).toEqual({});
+  const additionalDirectories = ["/a", "/b"];
+  await agent.newSession({ cwd: "/", mcpServers: [], additionalDirectories });
+  await agent.loadSession({ sessionId: "11111111-1111-1111-1111-111111111111", cwd: "/", mcpServers: [], additionalDirectories });
+  await agent.resumeSession({ sessionId: "22222222-2222-2222-2222-222222222222", cwd: "/", additionalDirectories });
+  await agent.forkSession({ sessionId: "33333333-3333-3333-3333-333333333333", cwd: "/", additionalDirectories });
+  expect(seen).toEqual([additionalDirectories, additionalDirectories, additionalDirectories, additionalDirectories]);
+});

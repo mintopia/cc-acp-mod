@@ -46,6 +46,7 @@ export interface HostSession {
 export async function launchHostSession(opts: {
   sessionId: string;
   cwd: string;
+  additionalDirectories?: string[];
   env?: NodeJS.ProcessEnv;
   disallowedTools?: string[];
   mcpServers?: Record<string, HostMcpServer>;
@@ -92,6 +93,7 @@ export async function launchHostSession(opts: {
   if (modes.bypassOffered) argv.push("--allow-dangerously-skip-permissions");
   argv.push(...modelArgs(env));
   argv.push(...mcpArgs(opts.mcpServers));
+  argv.push(...addDirArgs(opts.additionalDirectories));
   if (opts.disallowedTools?.length) argv.push("--disallowed-tools", opts.disallowedTools.join(","));
 
   let hello: Hello;
@@ -122,6 +124,10 @@ export function sessionArgs(opts: { sessionId: string; resume?: boolean; forkFro
 export function modelArgs(env: NodeJS.ProcessEnv): string[] {
   const id = initialModelId(env);
   return id === "default" ? [] : ["--model", id];
+}
+
+export function addDirArgs(dirs: string[] | undefined): string[] {
+  return (dirs ?? []).flatMap((dir) => ["--add-dir", dir]);
 }
 
 export function mcpArgs(servers: Record<string, HostMcpServer> | undefined): string[] {
