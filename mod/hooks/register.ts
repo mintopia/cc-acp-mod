@@ -8,7 +8,7 @@ type Event =
   | { type: 'turn_started'; turnId: string }
   | { type: 'chunk'; kind: 'text' | 'thinking'; text: string }
   | { type: 'tool_started'; toolUseId: string; tool: string; input: Record<string, unknown> }
-  | { type: 'tool_finished'; toolUseId: string; isError: boolean }
+  | { type: 'tool_finished'; toolUseId: string; isError: boolean; result?: unknown }
   | { type: 'turn_completed'; reason: string }
 
 let outbox: Event[] = []
@@ -112,7 +112,8 @@ export const register: Register = (on) => {
     const { tool, tool_use_id: toolUseId, agentId: _agentId, ...input } = e as any
     emit($, { type: 'tool_started', toolUseId, tool, input })
     const ran = await next(e)
-    emit($, { type: 'tool_finished', toolUseId, isError: ran.deny !== undefined || ran.isError === true })
+    const isError = ran.deny !== undefined || ran.isError === true
+    emit($, { type: 'tool_finished', toolUseId, isError, result: isError ? undefined : ran.result })
     return ran
   })
 

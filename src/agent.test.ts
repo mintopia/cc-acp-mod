@@ -104,11 +104,12 @@ test("tool use produces tool_call with kind, title and toolName, then completed/
     toolCallId: "t1",
     kind: "edit",
     title: "Edit src/a.ts",
-    status: "in_progress",
+    status: "pending",
     _meta: { claudeCode: { toolName: "Edit" } },
   });
-  expect(h.updates[1]).toEqual({ sessionUpdate: "tool_call_update", toolCallId: "t1", status: "completed" });
-  expect(h.updates[2]).toEqual({ sessionUpdate: "tool_call_update", toolCallId: "t2", status: "failed" });
+  expect(h.updates[1]).toEqual({ sessionUpdate: "tool_call_update", toolCallId: "t1", status: "in_progress" });
+  expect(h.updates[2]).toEqual({ sessionUpdate: "tool_call_update", toolCallId: "t1", status: "completed" });
+  expect(h.updates[3]).toEqual({ sessionUpdate: "tool_call_update", toolCallId: "t2", status: "failed" });
 });
 
 test("TodoWrite produces a plan update", async () => {
@@ -116,5 +117,20 @@ test("TodoWrite produces a plan update", async () => {
   await h.agent.newSession({ cwd: "/", mcpServers: [] });
   h.emit({ type: "tool_started", toolUseId: "t1", tool: "TodoWrite", input: { todos: [{ content: "a", status: "pending", activeForm: "A" }] } });
   await tick();
-  expect(h.updates[1]).toEqual({ sessionUpdate: "plan", entries: [{ content: "a", status: "pending", priority: "medium" }] });
+  expect(h.updates[2]).toEqual({ sessionUpdate: "plan", entries: [{ content: "a", status: "pending", priority: "medium" }] });
+});
+
+test("TaskCreate and TaskUpdate produce plan updates", async () => {
+  const h = recordingHarness();
+  await h.agent.newSession({ cwd: "/", mcpServers: [] });
+  h.emit({ type: "tool_started", toolUseId: "t1", tool: "TaskCreate", input: { subject: "A", description: "d" } });
+  h.emit({ type: "tool_finished", toolUseId: "t1", isError: false, result: { task: { id: "1", subject: "A" } } });
+  h.emit({ type: "tool_started", toolUseId: "t2", tool: "TaskUpdate", input: { taskId: "1", status: "in_progress" } });
+  h.emit({ type: "tool_finished", toolUseId: "t2", isError: false, result: { success: true, taskId: "1", updatedFields: ["status"] } });
+  await tick();
+  const plans = h.updates.filter((u) => u.sessionUpdate === "plan");
+  expect(plans).toEqual([
+    { sessionUpdate: "plan", entries: [{ content: "A", status: "pending", priority: "medium" }] },
+    { sessionUpdate: "plan", entries: [{ content: "A", status: "in_progress", priority: "medium" }] },
+  ]);
 });

@@ -64,3 +64,34 @@ export function planEntries(tool: string, input: Input): acp.PlanEntry[] | undef
     priority: "medium",
   }));
 }
+
+interface TrackedTask {
+  subject: string;
+  status: acp.PlanEntryStatus;
+}
+
+export class TaskPlan {
+  private readonly tasks = new Map<string, TrackedTask>();
+
+  apply(tool: string, input: Input, result: unknown): acp.PlanEntry[] | undefined {
+    const r = (result ?? {}) as Record<string, any>;
+    if (tool === "TaskCreate" && r.task?.id) {
+      this.tasks.set(String(r.task.id), { subject: String(r.task.subject ?? input.subject ?? ""), status: "pending" });
+    } else if (tool === "TaskUpdate" && r.success !== false && str(input.taskId)) {
+      const id = input.taskId as string;
+      if (input.status === "deleted") this.tasks.delete(id);
+      else {
+        const task = this.tasks.get(id);
+        if (!task) return undefined;
+        if (str(input.subject)) task.subject = input.subject as string;
+        if (input.status === "pending" || input.status === "in_progress" || input.status === "completed") task.status = input.status;
+      }
+    } else if (tool === "TaskList" && Array.isArray(r.tasks)) {
+      this.tasks.clear();
+      for (const t of r.tasks) this.tasks.set(String(t.id), { subject: String(t.subject), status: t.status });
+    } else {
+      return undefined;
+    }
+    return [...this.tasks.values()].map((t) => ({ content: t.subject, status: t.status, priority: "medium" }));
+  }
+}
