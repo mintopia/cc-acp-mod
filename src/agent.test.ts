@@ -244,3 +244,39 @@ test("clients without form elicitation get AskUserQuestion disallowed and never 
   expect(h.asked).toEqual([]);
   expect(h.sent).toEqual([{ type: "question_answer", requestId: "r1", answers: null }]);
 });
+
+test("Edit and Write tool calls carry diff content; Read keeps locations", async () => {
+  const h = recordingHarness();
+  await h.agent.newSession({ cwd: "/", mcpServers: [] });
+  h.emit({ type: "tool_started", toolUseId: "e", tool: "Edit", input: { file_path: "a.ts", old_string: "x", new_string: "y" } });
+  h.emit({ type: "tool_started", toolUseId: "w", tool: "Write", input: { file_path: "b.ts", content: "hi" } });
+  h.emit({ type: "tool_started", toolUseId: "r", tool: "Read", input: { file_path: "c.ts" } });
+  await tick();
+  const calls = h.updates.filter((u) => u.sessionUpdate === "tool_call");
+  expect(calls[0].content).toEqual([{ type: "diff", path: "a.ts", oldText: "x", newText: "y" }]);
+  expect(calls[1].content).toEqual([{ type: "diff", path: "b.ts", oldText: null, newText: "hi" }]);
+  expect(calls[2].locations).toEqual([{ path: "c.ts", line: 0 }]);
+});
+
+test("Bash output falls back to a console block without terminal opt-in", async () => {
+  const h = recordingHarness();
+  await h.agent.newSession({ cwd: "/", mcpServers: [] });
+  h.emit({ type: "tool_started", toolUseId: "b", tool: "Bash", input: { command: "ls" } });
+  h.emit({ type: "tool_finished", toolUseId: "b", isError: false, result: { stdout: "a\nb\n" } });
+  await tick();
+  expect(h.updates.at(-1).content).toEqual([{ type: "content", content: { type: "text", text: "```console\na\nb\n```" } }]);
+});
+
+test("Bash output uses terminal _meta when the client opts in", async () => {
+  const h = recordingHarness();
+  await h.agent.initialize({ protocolVersion: 1, clientCapabilities: { _meta: { terminal_output: true } } });
+  await h.agent.newSession({ cwd: "/", mcpServers: [] });
+  h.emit({ type: "tool_started", toolUseId: "b", tool: "Bash", input: { command: "ls" } });
+  h.emit({ type: "tool_finished", toolUseId: "b", isError: false, result: { stdout: "a\n", exitCode: 0 } });
+  await tick();
+  expect(h.updates[0]).toMatchObject({ content: [{ type: "terminal", terminalId: "b" }], _meta: { terminal_info: { terminal_id: "b" } } });
+  expect(h.updates.at(-1)._meta).toEqual({
+    terminal_output: { terminal_id: "b", data: "a\n" },
+    terminal_exit: { terminal_id: "b", exit_code: 0, signal: null },
+  });
+});
