@@ -1,5 +1,5 @@
 import { existsSync, readFileSync } from "node:fs";
-import { expect, test } from "vitest";
+import { expect, test, vi } from "vitest";
 import { CcAcpAgent, type HostLauncher } from "./agent.js";
 import { ModeTracker } from "./host-session.js";
 import { resolveModes } from "./modes.js";
@@ -33,7 +33,7 @@ test("images are saved to a session dir, resources inlined, caps advertised, fil
       { type: "resource_link", name: "doc", uri: "https://example.com/doc" },
     ],
   });
-  await new Promise((r) => setTimeout(r, 20));
+  await vi.waitFor(() => expect(h.sent.some((c) => c.type === "prompt")).toBe(true));
   const text = (h.sent[0] as { text: string }).text;
   const path = /\[Image attached: (.+?)\]/.exec(text)![1]!;
   expect(readFileSync(path)).toEqual(PNG);
@@ -49,7 +49,7 @@ test("attachments from separate prompts in one session never share a path", asyn
   const img = (b: string) => ({ sessionId, prompt: [{ type: "image" as const, data: Buffer.from(b).toString("base64"), mimeType: "image/png" }] });
   void h.agent.prompt(img("first"));
   void h.agent.prompt(img("second"));
-  await new Promise((r) => setTimeout(r, 20));
+  await vi.waitFor(() => expect(h.sent.some((c) => c.type === "prompt")).toBe(true));
   await h.agent.cancel({ sessionId });
   const paths = h.sent.filter((c) => c.type === "prompt").map((c) => /\[Image attached: (.+?)\]/.exec((c as { text: string }).text)![1]!);
   expect(readFileSync(paths[0]!, "utf8")).toBe("first");
@@ -61,7 +61,7 @@ test("a text prompt sent after an image prompt queues behind it", async () => {
   const { sessionId } = await h.agent.newSession({ cwd: "/tmp", mcpServers: [] });
   void h.agent.prompt({ sessionId, prompt: [{ type: "image", data: Buffer.from("png").toString("base64"), mimeType: "image/png" }] });
   void h.agent.prompt({ sessionId, prompt: [{ type: "text", text: "after" }] });
-  await new Promise((r) => setTimeout(r, 20));
+  await vi.waitFor(() => expect(h.sent.some((c) => c.type === "prompt")).toBe(true));
   const first = h.sent.find((c) => c.type === "prompt") as { text: string };
   expect(first.text).toMatch(/\[Image attached: /);
   await h.agent.close();
