@@ -1,5 +1,6 @@
 import { randomUUID } from "node:crypto";
 import * as acp from "@agentclientprotocol/sdk";
+import { claudeLoggedIn, terminalAuthMethods } from "./auth.js";
 import { formAnswers, questionForm } from "./ask-user-question.js";
 import { McpProxy, type HostMcpServer } from "./mcp-proxy.js";
 import { launchHostSession, switchModel, type HostSession } from "./host-session.js";
@@ -112,13 +113,17 @@ export class CcAcpAgent {
     private readonly client: UpdateSink,
     private readonly version: string,
     private readonly launch: HostLauncher = launchHostSession,
+    private readonly loggedIn: () => Promise<boolean> = claudeLoggedIn,
   ) {}
 
   async initialize(params: acp.InitializeRequest): Promise<acp.InitializeResponse> {
     this.terminalOutput = (params.clientCapabilities?._meta as Record<string, unknown> | undefined)?.terminal_output === true;
     this.formElicitation = params.clientCapabilities?.elicitation?.form != null && this.client.createElicitation !== undefined;
+    const terminalAuth = (params.clientCapabilities?._meta as Record<string, unknown> | undefined)?.["terminal-auth"] === true;
+    const authMethods = terminalAuth && !(await this.loggedIn()) ? terminalAuthMethods() : [];
     return {
       protocolVersion: acp.PROTOCOL_VERSION,
+      authMethods: authMethods as acp.InitializeResponse["authMethods"],
       agentInfo: { name: "cc-acp", title: "Claude Code (cc-acp)", version: this.version },
       agentCapabilities: { loadSession: true, promptCapabilities: { image: true }, mcpCapabilities: { http: true, sse: true } },
     };
