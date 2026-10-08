@@ -9,6 +9,7 @@ const TITLE_MAX = 80
 const DEFAULT_IDLE_MS = 3_600_000
 const MAX_REAP_CHECK_MS = 60_000
 const TMUX_SOCKET = 'cc-acp'
+const COMMAND_TURN_WAIT_MS = 2_000
 
 type Event =
   | { type: 'turn_started'; turnId: string }
@@ -48,6 +49,7 @@ let lastMode: string | undefined
 let probing = false
 let probeCount = 0
 let probeCommand: string | undefined
+let turnsStarted = 0
 let probeFile: string | undefined
 let idleMs = DEFAULT_IDLE_MS
 let unownedSince: number | undefined
@@ -204,12 +206,33 @@ async function reportCommands($: any): Promise<void> {
   } catch {}
 }
 
+function submitPrompt($: any, text: string) {
+  const slash = /^\/(\S+)(?:\s+([\s\S]*))?$/.exec(text)
+  if (!slash) {
+    void $.prompt.submit({ text }).catch(() => emit($, { type: 'turn_completed', reason: 'error' }))
+    return
+  }
+  const before = turnsStarted
+  const answer = (reply: string | undefined) => {
+    if (turnsStarted !== before) return
+    if (reply) emit($, { type: 'chunk', kind: 'text', text: reply })
+    emit($, { type: 'turn_completed', reason: 'answer' })
+  }
+  void $.command.run({ command: slash[1], args: slash[2] ?? '' }).then(
+    (result: { text?: string } | undefined) => {
+      if (result?.text !== undefined) answer(result.text)
+      else $.clock.after(COMMAND_TURN_WAIT_MS, () => answer(undefined))
+    },
+    (error: unknown) => answer(error instanceof Error ? error.message : String(error)),
+  )
+}
+
 function runCommand(
   $: any,
   command: { type: string; text?: string; id?: string; value?: string; requestId?: string; answers?: Record<string, string> | null },
 ) {
   if (command.type === 'prompt' && command.text !== undefined) {
-    void $.prompt.submit({ text: command.text }).catch(() => emit($, { type: 'turn_completed', reason: 'error' }))
+    submitPrompt($, command.text)
   } else if (command.type === 'steer' && command.text !== undefined) {
     void $.prompt.steer({ text: command.text }).catch(() => {})
   } else if (command.type === 'question_answer' && command.requestId !== undefined) {
@@ -372,6 +395,7 @@ export const register: Register = (on) => {
   on('turn.start', async ($, e, next) => {
     if ((e as { agentId?: string }).agentId === undefined) {
       turnActive = true
+      turnsStarted++
       hitMaxTokens = false
     }
     void reportModel($)
