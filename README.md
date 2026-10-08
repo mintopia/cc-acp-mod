@@ -28,7 +28,7 @@ cc-acp next to the Reference Adapter, `@agentclientprotocol/claude-agent-acp` 0.
 | Sessions | New, load, resume, fork, list, close, delete | Same |
 | `additionalDirectories` | ✓ | ✓ |
 | Permission modes | Default, Accept Edits, Plan, Auto, Bypass; `dontAsk` accepted as a default | Default, Accept Edits, Plan, Auto, Bypass |
-| Model and effort | Switched live through the SDK | Config options. A model change runs `/model` in the session and confirms its dialog |
+| Model and effort | Switched live through the SDK | Config options and `session/set_model` (full ids like `claude-sonnet-5-5` map to the matching alias). A model change runs `/model` in the session and confirms its dialog |
 | Slash commands | ✓, plus `/mcp` reconnect, enable and disable | ✓ Command list sent to the Client |
 | Client MCP servers | stdio, HTTP, SSE, passed to the SDK | stdio, HTTP, SSE, through an Adapter-owned proxy that survives Reattach |
 | Permission requests | ✓ | ✓ |
@@ -105,7 +105,6 @@ Client <--ACP/stdio--> Adapter <--tmux keystrokes--> Host Session (claude)
 
 - cc-acp runs on Linux and macOS. On Windows it needs WSL.
 - Changing the model mid-session with `/model` opens a "Switch model?" confirmation dialog in Claude Code, and Claude Code saves the choice as your default model in `~/.claude/settings.json`. See "Spike findings" item 6 in `openspec/changes/add-cc-acp-adapter/design.md`.
-- A prompt that starts with a slash command runs that command. Commands that open a panel in Claude Code, such as `/release-notes`, never return, so the prompt never finishes.
 
 ## Development
 
