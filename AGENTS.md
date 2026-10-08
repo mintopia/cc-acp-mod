@@ -14,6 +14,7 @@
  - Do not start a subagent without explicitly setting the model.
  - When building UI to match a mockup, it MUST match the mockup
  - When work is complete, before merging or finishing, run /no-comments
+ - Commit messages follow Conventional Commits (`fix:`, `feat:`, `feat!:`, `chore:`, `docs:`, `ci:`, `test:`); release-please derives versions and the CHANGELOG from them. Work on `develop`; `main` is for releases. See ADR-0005.
 
 ## Agent skills
 
