@@ -33,10 +33,11 @@ export type TurnReason = "answer" | "aborted" | "max_tokens" | "refusal" | "erro
 
 export type ModEvent =
   | { type: "turn_started"; turnId: string }
-  | { type: "chunk"; kind: "text" | "thinking"; text: string }
-  | { type: "tool_started"; toolUseId: string; tool: string; input: Record<string, unknown> }
-  | { type: "tool_finished"; toolUseId: string; isError: boolean; result?: unknown }
-  | { type: "turn_completed"; reason: TurnReason }
+  | { type: "chunk"; kind: "text" | "thinking"; text: string; parentToolUseId?: string }
+  | { type: "tool_started"; toolUseId: string; tool: string; input: Record<string, unknown>; parentToolUseId?: string }
+  | { type: "tool_finished"; toolUseId: string; isError: boolean; result?: unknown; parentToolUseId?: string }
+  | { type: "turn_completed"; reason: TurnReason; backgroundAgents?: number }
+  | { type: "background_agents"; count: number }
   | { type: "model_changed"; id: string }
   | { type: "config_changed"; option: "effort" | "fast"; value: string }
   | { type: "usage"; inputTokens: number; outputTokens: number; cachedReadTokens?: number; cachedWriteTokens?: number; contextUsed: number; contextSize: number }

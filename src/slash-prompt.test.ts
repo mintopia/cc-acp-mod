@@ -85,9 +85,9 @@ async function setup(promptText: string, run: (req: { command: string; args: str
 }
 
 describe("slash prompts", () => {
-  it("submits plain text through prompt.submit", async () => {
+  it("submits plain text through prompt.submit as the user's own words", async () => {
     const t = await setup("hello there", async () => ({}));
-    expect(t.submitted).toEqual([{ text: "hello there" }]);
+    expect(t.submitted).toEqual([{ text: "hello there", asUser: true }]);
     expect(t.runCalls).toEqual([]);
     expect(t.completions()).toEqual([]);
   });

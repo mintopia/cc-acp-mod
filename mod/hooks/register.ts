@@ -11,13 +11,16 @@ const MAX_REAP_CHECK_MS = 60_000
 const TMUX_SOCKET = 'cc-acp'
 const COMMAND_TURN_WAIT_MS = 2_000
 const PANEL_WAIT_MS = 3_000
+const BACKGROUND_POLL_MS = 2_000
+const LIVE_AGENT_STATUSES = new Set(['pending', 'running', 'waiting'])
 
 type Event =
   | { type: 'turn_started'; turnId: string }
-  | { type: 'chunk'; kind: 'text' | 'thinking'; text: string }
-  | { type: 'tool_started'; toolUseId: string; tool: string; input: Record<string, unknown> }
-  | { type: 'tool_finished'; toolUseId: string; isError: boolean; result?: unknown }
-  | { type: 'turn_completed'; reason: string }
+  | { type: 'chunk'; kind: 'text' | 'thinking'; text: string; parentToolUseId?: string }
+  | { type: 'tool_started'; toolUseId: string; tool: string; input: Record<string, unknown>; parentToolUseId?: string }
+  | { type: 'tool_finished'; toolUseId: string; isError: boolean; result?: unknown; parentToolUseId?: string }
+  | { type: 'turn_completed'; reason: string; backgroundAgents?: number }
+  | { type: 'background_agents'; count: number }
   | { type: 'model_changed'; id: string }
   | { type: 'config_changed'; option: 'effort' | 'fast'; value: string }
   | { type: 'usage'; inputTokens: number; outputTokens: number; cachedReadTokens?: number; cachedWriteTokens?: number; contextUsed: number; contextSize: number }
@@ -58,6 +61,33 @@ let idleMs = DEFAULT_IDLE_MS
 let unownedSince: number | undefined
 let turnActive = false
 let hitMaxTokens = false
+const spawnToolUse = new Map<string, string>()
+let watchingAgents = false
+let lastBackgroundCount = 0
+
+async function countLiveAgents($: any): Promise<number> {
+  try {
+    const agents = await $.agent.list()
+    return Array.isArray(agents) ? agents.filter((a: any) => LIVE_AGENT_STATUSES.has(a?.status)).length : 0
+  } catch {
+    return 0
+  }
+}
+
+function watchAgents($: any) {
+  if (watchingAgents) return
+  watchingAgents = true
+  const tick = async () => {
+    const count = await countLiveAgents($)
+    if (count !== lastBackgroundCount) {
+      lastBackgroundCount = count
+      emit($, { type: 'background_agents', count })
+    }
+    if (count > 0) $.clock.after(BACKGROUND_POLL_MS, tick)
+    else watchingAgents = false
+  }
+  $.clock.after(BACKGROUND_POLL_MS, tick)
+}
 
 async function post($: any, path: string, body: unknown) {
   const res = await $.http.fetch(`http://adapter${path}`, {
@@ -212,7 +242,7 @@ async function reportCommands($: any): Promise<void> {
 function submitPrompt($: any, text: string) {
   const slash = /^\/(\S+)(?:\s+([\s\S]*))?$/.exec(text)
   if (!slash) {
-    void $.prompt.submit({ text }).catch(() => emit($, { type: 'turn_completed', reason: 'error' }))
+    void $.prompt.submit({ text, asUser: true }).catch(() => emit($, { type: 'turn_completed', reason: 'error' }))
     return
   }
   const before = turnsStarted
@@ -422,28 +452,40 @@ export const register: Register = (on) => {
       hitMaxTokens = false
     }
     void reportModel($)
-    emit($, { type: 'turn_started', turnId: e.turnId })
+    if ((e as { agentId?: string }).agentId === undefined) emit($, { type: 'turn_started', turnId: e.turnId })
     return next(e)
   })
 
   on('turn.step', async function* ($, e, next) {
     for await (const chunk of next(e)) {
       if (chunk.kind === 'stop' && e.agentId === undefined) hitMaxTokens = chunk.stopReason === 'max_tokens'
-      if ((chunk.kind === 'text' || chunk.kind === 'thinking') && e.agentId === undefined) {
-        emit($, { type: 'chunk', kind: chunk.kind, text: chunk.text })
+      if (chunk.kind === 'text' || chunk.kind === 'thinking') {
+        if (e.agentId === undefined) emit($, { type: 'chunk', kind: chunk.kind, text: chunk.text })
+        else {
+          const parentToolUseId = spawnToolUse.get(e.agentId)
+          if (parentToolUseId) emit($, { type: 'chunk', kind: chunk.kind, text: chunk.text, parentToolUseId })
+        }
       }
       yield chunk
     }
   })
 
   on('tool.call', async ($, e, next) => {
-    if (e.agentId !== undefined) return next(e)
+    const parentToolUseId = e.agentId === undefined ? undefined : spawnToolUse.get(e.agentId)
+    if (e.agentId !== undefined && parentToolUseId === undefined) return next(e)
     const { tool, tool_use_id: toolUseId, agentId: _agentId, ...input } = e as any
-    emit($, { type: 'tool_started', toolUseId, tool, input })
+    const tag = parentToolUseId === undefined ? {} : { parentToolUseId }
+    emit($, { type: 'tool_started', toolUseId, tool, input, ...tag })
     const ran = await next(e)
     const isError = ran.deny !== undefined || ran.isError === true
-    emit($, { type: 'tool_finished', toolUseId, isError, result: isError ? undefined : ran.result })
+    emit($, { type: 'tool_finished', toolUseId, isError, result: isError ? undefined : ran.result, ...tag })
     return ran
+  })
+
+  on('agent.spawn', async ($, e, next) => {
+    const spawned = await next(e)
+    if (spawned.agentId !== undefined && e.tool_use_id) spawnToolUse.set(spawned.agentId, e.tool_use_id)
+    return spawned
   })
 
   on('classic.PermissionRequest', async ($: any, e: any, next: any) => {
@@ -483,7 +525,11 @@ export const register: Register = (on) => {
       turnActive = false
       await reportUsage($, e)
       await reportTitle($)
-      emit($, { type: 'turn_completed', reason: e.reason === 'answer' && hitMaxTokens ? 'max_tokens' : e.reason })
+      const reason = e.reason === 'answer' && hitMaxTokens ? 'max_tokens' : e.reason
+      const backgroundAgents = reason === 'answer' ? await countLiveAgents($) : 0
+      lastBackgroundCount = backgroundAgents
+      emit($, { type: 'turn_completed', reason, ...(backgroundAgents > 0 ? { backgroundAgents } : {}) })
+      if (backgroundAgents > 0) watchAgents($)
     }
     void reportModel($)
     void reportCommands($)
