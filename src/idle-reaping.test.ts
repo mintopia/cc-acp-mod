@@ -4,7 +4,7 @@ type Handler = (...args: any[]) => any;
 
 async function setup(idleMs: string) {
   vi.resetModules();
-  const { register } = await import("../mod/hooks/register.ts");
+  const { register } = await import("../mod/hooks/register.js");
   const handlers = new Map<string, Handler>();
   const ran: string[][] = [];
   const timers: Array<{ at: number; fn: () => void }> = [];

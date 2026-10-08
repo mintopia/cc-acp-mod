@@ -250,7 +250,7 @@ export class CcAcpAgent {
     session.commands = pendingCommands.get(sessionId);
     pendingCommands.delete(sessionId);
     this.sessions.set(sessionId, session);
-    for (const event of earlyPermissions) events = events.then(() => this.onEvent(sessionId, event)).catch(() => {});
+    for (const event of earlyPermissions) events = events.then(() => this.onEvent(sessionId, event, host.mode)).catch(() => {});
     if (session.commands) setTimeout(() => void this.sendCommands(sessionId, session.commands!).catch(() => {}), 0);
     return session;
   }

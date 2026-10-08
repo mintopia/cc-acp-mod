@@ -36,9 +36,19 @@ export class SessionChannel {
     this.helloPromise = new Promise((resolve) => (this.helloResolve = resolve));
   }
 
-  waitForIdle(): Promise<void> {
-    if (!this.turnActive) return Promise.resolve();
-    return new Promise((resolve) => this.idleWaiters.push(resolve));
+  waitForIdle(timeoutMs: number): Promise<boolean> {
+    if (!this.turnActive) return Promise.resolve(true);
+    return new Promise((resolve) => {
+      const done = () => {
+        clearTimeout(timer);
+        resolve(!this.turnActive);
+      };
+      const timer = setTimeout(() => {
+        this.idleWaiters = this.idleWaiters.filter((w) => w !== done);
+        resolve(false);
+      }, timeoutMs);
+      this.idleWaiters.push(done);
+    });
   }
 
   private trackTurn(event: ModEvent): void {

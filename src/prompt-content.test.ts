@@ -1,12 +1,17 @@
 import { existsSync, readFileSync } from "node:fs";
 import { expect, test } from "vitest";
 import { CcAcpAgent, type HostLauncher } from "./agent.js";
+import { ModeTracker } from "./host-session.js";
+import { resolveModes } from "./modes.js";
 import type { Command } from "./protocol.js";
 
 function harness() {
   const sent: Command[] = [];
+  const modes = resolveModes([], {}, false);
   const launch: HostLauncher = async ({ sessionId }) => ({
     sessionId,
+    modes,
+    mode: new ModeTracker(modes.initialMode),
     channel: { send: (c) => void sent.push(c), close: async () => {} },
   });
   return { agent: new CcAcpAgent({ sessionUpdate: async () => {} }, "0", launch), sent };

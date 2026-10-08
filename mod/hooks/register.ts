@@ -27,7 +27,6 @@ type Event =
 
 const conn = { plugin: 'cc-acp-mod', key: 'conn' } as const
 
-let turnActive = false
 let outbox: Event[] = []
 let flushing = false
 let connected = false
@@ -208,10 +207,7 @@ function runCommand(
   command: { type: string; text?: string; id?: string; value?: string; requestId?: string; answers?: Record<string, string> | null },
 ) {
   if (command.type === 'prompt' && command.text !== undefined) {
-    void $.prompt.submit({ text: command.text }).catch(() => {
-      turnActive = false
-      emit($, { type: 'turn_completed', reason: 'error' })
-    })
+    void $.prompt.submit({ text: command.text }).catch(() => emit($, { type: 'turn_completed', reason: 'error' }))
   } else if (command.type === 'steer' && command.text !== undefined) {
     void $.prompt.steer({ text: command.text }).catch(() => {})
   } else if (command.type === 'question_answer' && command.requestId !== undefined) {
@@ -263,7 +259,7 @@ async function connect($: any): Promise<void> {
     for (const request of pending.values()) {
       if (!outbox.some((e) => e.type === 'permission_request' && e.requestId === request.requestId)) outbox.push(request)
     }
-    await post($, '/hello', { protocolVersion: PROTOCOL_VERSION, sessionId, modVersion: MOD_VERSION, steering, buffered: outbox.length, busy: turnActive })
+    await post($, '/hello', { protocolVersion: PROTOCOL_VERSION, sessionId, modVersion: MOD_VERSION, steering, buffered: outbox.length, busy: isBusy() })
     connected = true
     unownedSince = undefined
     retryMs = RETRY_MS
@@ -379,7 +375,6 @@ export const register: Register = (on) => {
   on('turn.start', async ($, e, next) => {
     if (e.agentId === undefined) turnActive = true
     void reportModel($)
-    turnActive = true
     emit($, { type: 'turn_started', turnId: e.turnId })
     return next(e)
   })
@@ -439,7 +434,6 @@ export const register: Register = (on) => {
       turnActive = false
       await reportUsage($, e)
       await reportTitle($)
-      turnActive = false
       emit($, { type: 'turn_completed', reason: e.reason })
     }
     void reportModel($)
