@@ -4,11 +4,13 @@ export interface Hello {
   protocolVersion: number;
   sessionId: string;
   modVersion: string;
+  steering?: boolean;
 }
 
 export type Command =
   | { type: "prompt"; text: string }
   | { type: "cancel" }
+  | { type: "steer"; text: string }
   | { type: "set_model"; id: string };
 
 export type TurnReason = "answer" | "aborted" | "refusal" | "error";
