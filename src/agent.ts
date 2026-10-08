@@ -21,7 +21,7 @@ export type HostLauncher = (opts: {
 
 interface QueuedPrompt {
   text: string;
-  resolve: (stopReason: acp.StopReason) => void;
+  resolve: (result: { stopReason: acp.StopReason; usage?: acp.Usage }) => void;
   reject: (err: Error) => void;
   cancelRequested: boolean;
 }
@@ -32,6 +32,7 @@ interface Session {
   taskPlan: TaskPlan;
   tools: Map<string, { tool: string; input: Record<string, unknown> }>;
   current?: QueuedPrompt;
+  turnUsage?: acp.Usage;
   models: ModelInfo[];
   currentModel: string;
   modelWaiters: Map<string, () => void>;
@@ -191,13 +192,13 @@ export class CcAcpAgent {
     const session = this.sessions.get(params.sessionId);
     if (!session) throw new Error(`Unknown session ${params.sessionId}`);
     const text = params.prompt.map((block) => (block.type === "text" ? block.text : "")).join("");
-    const stopReason = await new Promise<acp.StopReason>((resolve, reject) => {
+    const result = await new Promise<{ stopReason: acp.StopReason; usage?: acp.Usage }>((resolve, reject) => {
       const entry: QueuedPrompt = { text, resolve, reject, cancelRequested: false };
       session.queue.push(entry);
       signal?.addEventListener("abort", () => this.cancelPrompt(session, entry), { once: true });
       this.startNext(session);
     });
-    return { stopReason };
+    return result;
   }
 
   async cancel(params: { sessionId: string }): Promise<void> {
@@ -228,7 +229,7 @@ export class CcAcpAgent {
     const index = session.queue.indexOf(entry);
     if (index === -1) return;
     session.queue.splice(index, 1);
-    entry.resolve("cancelled");
+    entry.resolve({ stopReason: "cancelled" });
   }
 
   private async askQuestion(sessionId: string, event: Extract<ModEvent, { type: "ask_question" }>): Promise<void> {
@@ -274,6 +275,23 @@ export class CcAcpAgent {
       await this.client.sessionUpdate({
         sessionId,
         update: { sessionUpdate: "config_option_update", configOptions: configOptions(session) },
+      });
+    } else if (event.type === "usage" && session) {
+      session.turnUsage = {
+        totalTokens: event.inputTokens + event.outputTokens + (event.cachedReadTokens ?? 0) + (event.cachedWriteTokens ?? 0),
+        inputTokens: event.inputTokens,
+        outputTokens: event.outputTokens,
+        ...(event.cachedReadTokens !== undefined ? { cachedReadTokens: event.cachedReadTokens } : {}),
+        ...(event.cachedWriteTokens !== undefined ? { cachedWriteTokens: event.cachedWriteTokens } : {}),
+      };
+      await this.client.sessionUpdate({
+        sessionId,
+        update: { sessionUpdate: "usage_update", used: event.contextUsed, size: event.contextSize },
+      });
+    } else if (event.type === "title") {
+      await this.client.sessionUpdate({
+        sessionId,
+        update: { sessionUpdate: "session_info_update", title: event.title, updatedAt: new Date().toISOString() },
       });
     } else if (event.type === "tool_started") {
       session?.tools.set(event.toolUseId, { tool: event.tool, input: event.input });
@@ -326,7 +344,9 @@ export class CcAcpAgent {
       const done = session.current;
       session.current = undefined;
       const stopReason = done.cancelRequested && event.reason !== "error" ? "cancelled" : STOP_REASONS[event.reason];
-      if (stopReason) done.resolve(stopReason);
+      const usage = session.turnUsage;
+      session.turnUsage = undefined;
+      if (stopReason) done.resolve({ stopReason, ...(usage ? { usage } : {}) });
       else done.reject(new Error(`Turn ended with ${event.reason}`));
       this.startNext(session);
     }

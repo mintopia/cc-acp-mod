@@ -12,6 +12,8 @@ type Event =
   | { type: 'turn_completed'; reason: string }
   | { type: 'model_changed'; id: string }
   | { type: 'config_changed'; option: 'effort' | 'fast'; value: string }
+  | { type: 'usage'; inputTokens: number; outputTokens: number; cachedReadTokens?: number; cachedWriteTokens?: number; contextUsed: number; contextSize: number }
+  | { type: 'title'; title: string }
   | { type: 'ask_question'; requestId: string; questions: unknown[] }
 
 let outbox: Event[] = []
@@ -20,6 +22,7 @@ let connected = false
 let socketPath: string | undefined
 let started = false
 let lastModel: string | undefined
+let lastTitle: string | undefined
 let nextRequest = 0
 const pendingQuestions = new Map<string, (answers: Record<string, string> | null) => void>()
 
@@ -63,6 +66,38 @@ async function reportModel($: any): Promise<void> {
     if (typeof id === 'string' && id !== lastModel) {
       lastModel = id
       emit($, { type: 'model_changed', id })
+    }
+  } catch {}
+}
+
+async function reportUsage($: any, e: any): Promise<void> {
+  const u = e.usage
+  if (!u || typeof u.input_tokens !== 'number' || typeof u.output_tokens !== 'number') return
+  const cacheRead = u.cache_read_input_tokens
+  const cacheWrite = u.cache_creation_input_tokens
+  const contextUsed = u.input_tokens + (cacheRead ?? 0) + (cacheWrite ?? 0) + u.output_tokens
+  let contextSize = 200_000
+  try {
+    const size = await $.session.contextWindow?.()
+    if (typeof size === 'number') contextSize = size
+  } catch {}
+  emit($, {
+    type: 'usage',
+    inputTokens: u.input_tokens,
+    outputTokens: u.output_tokens,
+    ...(typeof cacheRead === 'number' ? { cachedReadTokens: cacheRead } : {}),
+    ...(typeof cacheWrite === 'number' ? { cachedWriteTokens: cacheWrite } : {}),
+    contextUsed,
+    contextSize,
+  })
+}
+
+async function reportTitle($: any): Promise<void> {
+  try {
+    const title = await $.session.title?.()
+    if (typeof title === 'string' && title !== '' && title !== lastTitle) {
+      lastTitle = title
+      emit($, { type: 'title', title })
     }
   } catch {}
 }
@@ -169,7 +204,11 @@ export const register: Register = (on) => {
   })
 
   on('turn.complete', async ($, e, next) => {
-    if (e.agentId === undefined) emit($, { type: 'turn_completed', reason: e.reason })
+    if (e.agentId === undefined) {
+      await reportUsage($, e)
+      await reportTitle($)
+      emit($, { type: 'turn_completed', reason: e.reason })
+    }
     void reportModel($)
     return next(e)
   })
