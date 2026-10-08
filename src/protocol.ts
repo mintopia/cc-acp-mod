@@ -1,3 +1,5 @@
+import type { AskQuestion } from "./ask-user-question.js";
+
 export const PROTOCOL_VERSION = 1;
 
 export interface Hello {
@@ -11,7 +13,8 @@ export type Command =
   | { type: "prompt"; text: string }
   | { type: "cancel" }
   | { type: "steer"; text: string }
-  | { type: "set_model"; id: string };
+  | { type: "set_model"; id: string }
+  | { type: "question_answer"; requestId: string; answers: Record<string, string> | null };
 
 export type TurnReason = "answer" | "aborted" | "refusal" | "error";
 
@@ -21,6 +24,7 @@ export type ModEvent =
   | { type: "tool_started"; toolUseId: string; tool: string; input: Record<string, unknown> }
   | { type: "tool_finished"; toolUseId: string; isError: boolean; result?: unknown }
   | { type: "turn_completed"; reason: TurnReason }
-  | { type: "model_changed"; id: string };
+  | { type: "model_changed"; id: string }
+  | { type: "ask_question"; requestId: string; questions: AskQuestion[] };
 
 export const POLL_WINDOW_MS = 20_000;

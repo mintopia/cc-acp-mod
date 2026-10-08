@@ -1,5 +1,6 @@
 import { randomUUID } from "node:crypto";
 import * as acp from "@agentclientprotocol/sdk";
+import { formAnswers, questionForm } from "./ask-user-question.js";
 import { launchHostSession, switchModel, type HostSession } from "./host-session.js";
 import { MODEL_CONFIG_ID, buildModelList, initialModelId, type ModelInfo } from "./models.js";
 import { TaskPlan, planEntries, toolInfo } from "./tool-mapping.js";
@@ -7,12 +8,14 @@ import type { ModEvent, TurnReason } from "./protocol.js";
 
 export interface UpdateSink {
   sessionUpdate(params: acp.SessionNotification): Promise<void>;
+  createElicitation?(params: acp.CreateElicitationRequest): Promise<acp.CreateElicitationResponse>;
 }
 
 export type HostLauncher = (opts: {
   sessionId: string;
   cwd: string;
   env?: NodeJS.ProcessEnv;
+  disallowedTools?: string[];
   onEvent: (event: ModEvent) => void;
 }) => Promise<Pick<HostSession, "sessionId"> & { steering?: boolean; channel: Pick<HostSession["channel"], "send" | "close"> }>;
 
@@ -53,6 +56,7 @@ const STOP_REASONS: Partial<Record<TurnReason, acp.StopReason>> = {
 
 export class CcAcpAgent {
   private readonly sessions = new Map<string, Session>();
+  private formElicitation = false;
 
   constructor(
     private readonly client: UpdateSink,
@@ -60,7 +64,8 @@ export class CcAcpAgent {
     private readonly launch: HostLauncher = launchHostSession,
   ) {}
 
-  async initialize(_params: acp.InitializeRequest): Promise<acp.InitializeResponse> {
+  async initialize(params: acp.InitializeRequest): Promise<acp.InitializeResponse> {
+    this.formElicitation = params.clientCapabilities?.elicitation?.form != null && this.client.createElicitation !== undefined;
     return {
       protocolVersion: acp.PROTOCOL_VERSION,
       agentInfo: { name: "cc-acp", title: "Claude Code (cc-acp)", version: this.version },
@@ -76,7 +81,9 @@ export class CcAcpAgent {
       sessionId,
       cwd: params.cwd,
       env,
+      disallowedTools: this.formElicitation ? [] : ["AskUserQuestion"],
       onEvent: (event) => {
+        if (event.type === "ask_question") return void this.askQuestion(sessionId, event);
         events = events.then(() => this.onEvent(sessionId, event)).catch(() => {});
       },
     });
@@ -164,6 +171,24 @@ export class CcAcpAgent {
     if (index === -1) return;
     session.queue.splice(index, 1);
     entry.resolve("cancelled");
+  }
+
+  private async askQuestion(sessionId: string, event: Extract<ModEvent, { type: "ask_question" }>): Promise<void> {
+    const session = this.sessions.get(sessionId);
+    if (!session) return;
+    let answers: Record<string, string> | null = null;
+    if (this.formElicitation) {
+      try {
+        const res = await this.client.createElicitation!({
+          mode: "form",
+          sessionId,
+          message: "Claude has a question",
+          requestedSchema: questionForm(event.questions),
+        });
+        if (res.action === "accept") answers = formAnswers(event.questions, res.content as Record<string, unknown> | null | undefined);
+      } catch {}
+    }
+    session.host.channel.send({ type: "question_answer", requestId: event.requestId, answers });
   }
 
   private async onEvent(sessionId: string, event: ModEvent): Promise<void> {
