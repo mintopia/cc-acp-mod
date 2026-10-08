@@ -3,6 +3,7 @@ import * as acp from "@agentclientprotocol/sdk";
 import { formAnswers, questionForm } from "./ask-user-question.js";
 import { launchHostSession, switchModel, type HostSession } from "./host-session.js";
 import { MODEL_CONFIG_ID, buildModelList, initialModelId, type ModelInfo } from "./models.js";
+import { SessionAttachments, promptText } from "./prompt-content.js";
 import { TaskPlan, bashOutput, diffContent, planEntries, toolInfo } from "./tool-mapping.js";
 import type { ModEvent, TurnReason } from "./protocol.js";
 
@@ -38,6 +39,7 @@ interface Session {
   effort: string;
   fast: string;
   configWaiters: Map<string, () => void>;
+  attachments: SessionAttachments;
 }
 
 export const EFFORT_CONFIG_ID = "effort";
@@ -101,7 +103,7 @@ export class CcAcpAgent {
     return {
       protocolVersion: acp.PROTOCOL_VERSION,
       agentInfo: { name: "cc-acp", title: "Claude Code (cc-acp)", version: this.version },
-      agentCapabilities: {},
+      agentCapabilities: { promptCapabilities: { image: true } },
     };
   }
 
@@ -130,6 +132,7 @@ export class CcAcpAgent {
       effort: "high",
       fast: "off",
       configWaiters: new Map(),
+      attachments: new SessionAttachments(sessionId, env),
     };
     this.sessions.set(sessionId, session);
     return { sessionId, configOptions: configOptions(session), _meta: { steering: { supported: host.steering === true } } };
@@ -180,7 +183,8 @@ export class CcAcpAgent {
     if (!session) throw new Error(`Unknown session ${params.sessionId}`);
     if (!session.host.steering) throw acp.RequestError.methodNotFound("_session/steering");
     if (!session.current) throw new Error("No running turn to steer");
-    const text = params.prompt.map((block) => (block.type === "text" ? block.text : "")).join("");
+    const converted = promptText(params.prompt, session.attachments);
+    const text = typeof converted === "string" ? converted : await converted;
     session.host.channel.send({ type: "steer", text });
     return {};
   }
@@ -190,7 +194,8 @@ export class CcAcpAgent {
   async prompt(params: acp.PromptRequest, signal?: AbortSignal): Promise<acp.PromptResponse> {
     const session = this.sessions.get(params.sessionId);
     if (!session) throw new Error(`Unknown session ${params.sessionId}`);
-    const text = params.prompt.map((block) => (block.type === "text" ? block.text : "")).join("");
+    const converted = promptText(params.prompt, session.attachments);
+    const text = typeof converted === "string" ? converted : await converted;
     const stopReason = await new Promise<acp.StopReason>((resolve, reject) => {
       const entry: QueuedPrompt = { text, resolve, reject, cancelRequested: false };
       session.queue.push(entry);
@@ -206,7 +211,10 @@ export class CcAcpAgent {
   }
 
   async close(): Promise<void> {
-    await Promise.all([...this.sessions.values()].map((s) => s.host.channel.close()));
+    await Promise.all([...this.sessions.values()].map(async (s) => {
+      await s.host.channel.close();
+      await s.attachments.cleanup();
+    }));
     this.sessions.clear();
   }
 
