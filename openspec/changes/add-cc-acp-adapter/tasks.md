@@ -20,7 +20,7 @@ Each task maps to one GitHub issue (child of the epic). "Blocked by" lists task 
 - [x] 1.15 MCP proxy — blocked by: 1.2
 - [x] 1.16 MCP credentials across Reattach — blocked by: 1.12, 1.15
 - [x] 1.17 Launch hardening — blocked by: 1.2
-- [ ] 1.18 Tier 1 done: package and validate with Harmonic — blocked by: 1.3, 1.5, 1.6, 1.7, 1.8, 1.9, 1.10, 1.11, 1.15, 1.17
+- [x] 1.18 Tier 1 done: package and validate with Harmonic — blocked by: 1.3, 1.5, 1.6, 1.7, 1.8, 1.9, 1.10, 1.11, 1.15, 1.17
 
 ## 2. Parity (Tier 2)
 - [x] 2.1 Session list, resume, close, delete — blocked by: 1.12
