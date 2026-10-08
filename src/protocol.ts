@@ -9,7 +9,9 @@ export interface Hello {
 export type Command =
   | { type: "prompt"; text: string }
   | { type: "cancel" }
-  | { type: "set_model"; id: string };
+  | { type: "set_model"; id: string }
+  | { type: "set_effort"; value: string }
+  | { type: "set_fast"; value: string };
 
 export type TurnReason = "answer" | "aborted" | "refusal" | "error";
 
@@ -19,6 +21,7 @@ export type ModEvent =
   | { type: "tool_started"; toolUseId: string; tool: string; input: Record<string, unknown> }
   | { type: "tool_finished"; toolUseId: string; isError: boolean; result?: unknown }
   | { type: "turn_completed"; reason: TurnReason }
-  | { type: "model_changed"; id: string };
+  | { type: "model_changed"; id: string }
+  | { type: "config_changed"; option: "effort" | "fast"; value: string };
 
 export const POLL_WINDOW_MS = 20_000;

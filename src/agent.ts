@@ -32,6 +32,36 @@ interface Session {
   models: ModelInfo[];
   currentModel: string;
   modelWaiters: Map<string, () => void>;
+  effort: string;
+  fast: string;
+  configWaiters: Map<string, () => void>;
+}
+
+export const EFFORT_CONFIG_ID = "effort";
+export const FAST_CONFIG_ID = "fast";
+const EFFORT_LEVELS = ["low", "medium", "high", "xhigh", "max"];
+const FAST_VALUES = ["off", "on"];
+const SET_CONFIG_TIMEOUT_MS = 30_000;
+
+function configOptions(session: Session): acp.SessionConfigOption[] {
+  return [
+    modelOption(session),
+    {
+      id: EFFORT_CONFIG_ID,
+      name: "Effort",
+      category: "thought_level",
+      type: "select",
+      currentValue: session.effort,
+      options: EFFORT_LEVELS.map((v) => ({ value: v, name: v })),
+    },
+    {
+      id: FAST_CONFIG_ID,
+      name: "Fast mode",
+      type: "select",
+      currentValue: session.fast,
+      options: FAST_VALUES.map((v) => ({ value: v, name: v })),
+    },
+  ];
 }
 
 function modelOption(session: Pick<Session, "models" | "currentModel">): acp.SessionConfigOption {
@@ -88,14 +118,21 @@ export class CcAcpAgent {
       models: buildModelList(env),
       currentModel: initialModelId(env),
       modelWaiters: new Map(),
+      effort: "high",
+      fast: "off",
+      configWaiters: new Map(),
     };
     this.sessions.set(sessionId, session);
-    return { sessionId, configOptions: [modelOption(session)] };
+    return { sessionId, configOptions: configOptions(session) };
   }
 
   async setSessionConfigOption(params: acp.SetSessionConfigOptionRequest): Promise<acp.SetSessionConfigOptionResponse> {
     const session = this.sessions.get(params.sessionId);
     if (!session) throw new Error(`Unknown session ${params.sessionId}`);
+    if (params.configId === EFFORT_CONFIG_ID || params.configId === FAST_CONFIG_ID) {
+      await this.setEffortOrFast(session, params.configId, String(params.value));
+      return { configOptions: configOptions(session) };
+    }
     if (params.configId !== MODEL_CONFIG_ID) throw new Error(`Unknown config option ${params.configId}`);
     const id = String(params.value);
     if (!session.models.some((m) => m.id === id)) throw new Error(`Unknown model ${id}`);
@@ -107,7 +144,26 @@ export class CcAcpAgent {
         session.modelWaiters.delete(id);
       }
     }
-    return { configOptions: [modelOption(session)] };
+    return { configOptions: configOptions(session) };
+  }
+
+  private async setEffortOrFast(session: Session, option: "effort" | "fast", value: string): Promise<void> {
+    const allowed = option === "effort" ? EFFORT_LEVELS : FAST_VALUES;
+    if (!allowed.includes(value)) throw new Error(`Unknown ${option} value ${value}`);
+    if (value === session[option]) return;
+    const key = `${option}:${value}`;
+    let timer: NodeJS.Timeout | undefined;
+    const applied = new Promise<void>((resolve, reject) => {
+      session.configWaiters.set(key, resolve);
+      timer = setTimeout(() => reject(new Error(`${option} did not change to ${value}`)), SET_CONFIG_TIMEOUT_MS);
+    });
+    try {
+      session.host.channel.send(option === "effort" ? { type: "set_effort", value } : { type: "set_fast", value });
+      await applied;
+    } finally {
+      clearTimeout(timer);
+      session.configWaiters.delete(key);
+    }
   }
 
   async authenticate(): Promise<void> {}
@@ -173,7 +229,14 @@ export class CcAcpAgent {
       if (!session.models.some((m) => m.id === event.id)) session.models.push({ id: event.id, name: event.id });
       await this.client.sessionUpdate({
         sessionId,
-        update: { sessionUpdate: "config_option_update", configOptions: [modelOption(session)] },
+        update: { sessionUpdate: "config_option_update", configOptions: configOptions(session) },
+      });
+    } else if (event.type === "config_changed" && session) {
+      session[event.option] = event.value;
+      session.configWaiters.get(`${event.option}:${event.value}`)?.();
+      await this.client.sessionUpdate({
+        sessionId,
+        update: { sessionUpdate: "config_option_update", configOptions: configOptions(session) },
       });
     } else if (event.type === "tool_started") {
       session?.tools.set(event.toolUseId, { tool: event.tool, input: event.input });
