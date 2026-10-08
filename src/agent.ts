@@ -1,3 +1,4 @@
+import { socketPath } from "./paths.js";
 import { randomUUID } from "node:crypto";
 import * as acp from "@agentclientprotocol/sdk";
 import { claudeLoggedIn, terminalAuthMethods } from "./auth.js";
@@ -7,9 +8,10 @@ import { launchHostSession, switchModel, MODE_PROBE_COMMAND, type HostSession, t
 import { MODEL_CONFIG_ID, buildModelList, initialModelId, type ModelInfo } from "./models.js";
 import { switchMode, toAcpModeState } from "./modes.js";
 import { SessionAttachments, promptText } from "./prompt-content.js";
-import { pressShiftTab, typeCommand } from "./tmux.js";
 import { TaskPlan, bashOutput, diffContent, planEntries, toolInfo } from "./tool-mapping.js";
-import { readTranscript } from "./transcript.js";
+import { findTranscript, listTranscripts, readTranscript } from "./transcript.js";
+import { rm } from "node:fs/promises";
+import { killSession, pressShiftTab, typeCommand } from "./tmux.js";
 import type { ModEvent, PermissionDecision, SlashCommand, TurnReason } from "./protocol.js";
 
 export interface UpdateSink {
@@ -142,7 +144,7 @@ export class CcAcpAgent {
       protocolVersion: acp.PROTOCOL_VERSION,
       authMethods: authMethods as acp.InitializeResponse["authMethods"],
       agentInfo: { name: "cc-acp", title: "Claude Code (cc-acp)", version: this.version },
-      agentCapabilities: { loadSession: true, sessionCapabilities: { fork: {} }, promptCapabilities: { image: true }, mcpCapabilities: { http: true, sse: true } },
+      agentCapabilities: { loadSession: true, sessionCapabilities: { fork: {}, list: {}, resume: {}, close: {}, delete: {} }, promptCapabilities: { image: true }, mcpCapabilities: { http: true, sse: true } },
     };
   }
 
@@ -160,6 +162,38 @@ export class CcAcpAgent {
     await session.drain();
     if (live) for (const pending of [...live.pendingPermissions.values()]) void pending.ask();
     return { modes: toAcpModeState(session.host.modes, session.host.mode.current), configOptions: configOptions(session), _meta: { steering: { supported: session.host.steering === true } } };
+  }
+
+  async listSessions(params: acp.ListSessionsRequest): Promise<acp.ListSessionsResponse> {
+    return listTranscripts({ cwd: params.cwd, cursor: params.cursor });
+  }
+
+  async resumeSession(params: acp.ResumeSessionRequest): Promise<acp.ResumeSessionResponse> {
+    const { sessionId } = params;
+    const live = this.sessions.get(sessionId);
+    const session = live ?? (await this.startSession(sessionId, params.cwd, params.mcpServers ?? [], true));
+    await session.drain();
+    if (live) for (const pending of [...live.pendingPermissions.values()]) void pending.ask();
+    return { modes: toAcpModeState(session.host.modes, session.host.mode.current), configOptions: configOptions(session), _meta: { steering: { supported: session.host.steering === true } } };
+  }
+
+  async closeSession(params: acp.CloseSessionRequest): Promise<acp.CloseSessionResponse> {
+    await this.release(params.sessionId);
+    return {};
+  }
+
+  async deleteSession(params: acp.DeleteSessionRequest): Promise<acp.DeleteSessionResponse> {
+    await this.release(params.sessionId);
+    const file = await findTranscript(params.sessionId, process.env);
+    if (file) await rm(file, { force: true });
+    return {};
+  }
+
+  private async release(sessionId: string): Promise<void> {
+    const session = this.sessions.get(sessionId);
+    if (session) await this.displaced(sessionId);
+    await killSession(sessionId);
+    await rm(socketPath(sessionId, process.env), { force: true });
   }
 
   async forkSession(params: acp.ForkSessionRequest): Promise<acp.ForkSessionResponse> {

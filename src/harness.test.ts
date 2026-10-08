@@ -124,3 +124,63 @@ test("session/fork returns a new session with the source history, launched from 
     await rm(config, { recursive: true, force: true });
   }
 });
+
+test("session list/resume/close/delete manage sessions from transcripts", async () => {
+  const { mkdtemp, mkdir, writeFile, rm, utimes, access } = await import("node:fs/promises");
+  const { tmpdir } = await import("node:os");
+  const { join } = await import("node:path");
+  const { listTranscripts } = await import("./transcript.js");
+  const config = await mkdtemp(join(tmpdir(), "cc-acp-config-"));
+  const prev = process.env.CLAUDE_CONFIG_DIR;
+  process.env.CLAUDE_CONFIG_DIR = config;
+  try {
+    const write = async (id: string, cwd: string, prompt: string, mtime: number) => {
+      const dir = join(config, "projects", cwd.replaceAll("/", "-"));
+      await mkdir(dir, { recursive: true });
+      const file = join(dir, `${id}.jsonl`);
+      const lines = [{ type: "user", cwd, message: { role: "user", content: prompt } }, { type: "assistant", message: { role: "assistant", content: [{ type: "text", text: "ok" }] } }];
+      await writeFile(file, lines.map((l) => JSON.stringify(l)).join("\n"));
+      await utimes(file, mtime, mtime);
+      return file;
+    };
+    const old = "aaaaaaaa-0000-0000-0000-000000000001";
+    const recent = "aaaaaaaa-0000-0000-0000-000000000002";
+    const other = "aaaaaaaa-0000-0000-0000-000000000003";
+    await write(old, "/tmp/a", "first prompt", 1_000_000);
+    const recentFile = await write(recent, "/tmp/a", "second prompt", 2_000_000);
+    await write(other, "/tmp/b", "elsewhere", 3_000_000);
+
+    h = await startHarness();
+    const init = await h.request<{ agentCapabilities: { sessionCapabilities: Record<string, object> } }>("initialize", { protocolVersion: 1 });
+    expect(Object.keys(init.agentCapabilities.sessionCapabilities)).toEqual(expect.arrayContaining(["list", "resume", "close", "delete"]));
+
+    const listed = await h.request<{ sessions: { sessionId: string; cwd: string; title: string }[] }>("session/list", { cwd: "/tmp/a" });
+    expect(listed.sessions.map((s) => s.sessionId)).toEqual([recent, old]);
+    expect(listed.sessions[0]).toMatchObject({ cwd: "/tmp/a", title: "second prompt" });
+    const all = await listTranscripts({}, process.env);
+    expect(all.sessions.map((s) => s.sessionId)).toEqual([other, recent, old]);
+    const page1 = await listTranscripts({ pageSize: 2 }, process.env);
+    expect(page1.sessions.map((s) => s.sessionId)).toEqual([other, recent]);
+    const page2 = await listTranscripts({ pageSize: 2, cursor: page1.nextCursor }, process.env);
+    expect(page2.sessions.map((s) => s.sessionId)).toEqual([old]);
+    expect(page2.nextCursor).toBeUndefined();
+
+    await h.request("session/resume", { sessionId: recent, cwd: "/tmp/a", mcpServers: [] });
+    expect(h.resumed.get(recent)).toBe(true);
+    expect(h.updates(recent)).toEqual([]);
+
+    const sock = (h.mods.get(recent) as unknown as { socketPath: string }).socketPath;
+    await h.request("session/close", { sessionId: recent });
+    await expect(access(sock)).rejects.toThrow();
+    await access(recentFile);
+
+    await h.request("session/resume", { sessionId: recent, cwd: "/tmp/a", mcpServers: [] });
+    await h.request("session/delete", { sessionId: recent });
+    await expect(access(recentFile)).rejects.toThrow();
+    expect((await h.request<{ sessions: unknown[] }>("session/list", { cwd: "/tmp/a" })).sessions).toHaveLength(1);
+  } finally {
+    if (prev === undefined) delete process.env.CLAUDE_CONFIG_DIR;
+    else process.env.CLAUDE_CONFIG_DIR = prev;
+    await rm(config, { recursive: true, force: true });
+  }
+});

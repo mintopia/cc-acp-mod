@@ -81,3 +81,70 @@ export function replayUpdates(jsonl: string): Update[] {
   }
   return updates;
 }
+
+export const SESSION_PAGE_SIZE = 50;
+
+interface Listed {
+  info: acp.SessionInfo;
+  mtime: number;
+}
+
+function firstUserText(content: unknown): string | undefined {
+  const blocks = typeof content === "string" ? [{ type: "text", text: content }] : Array.isArray(content) ? content : [];
+  for (const block of blocks as Array<Record<string, unknown>>) {
+    if (block.type !== "text" || typeof block.text !== "string") continue;
+    const visible = block.text.replace(HIDDEN_MARKERS, "").trim();
+    if (visible) return visible;
+  }
+  return undefined;
+}
+
+export function summariseTranscript(jsonl: string): { cwd?: string; title?: string } {
+  let cwd: string | undefined;
+  let named: string | undefined;
+  let firstPrompt: string | undefined;
+  for (const line of jsonl.split("\n")) {
+    if (!line.trim()) continue;
+    let entry: { type?: string; cwd?: string; isMeta?: boolean; isSidechain?: boolean; customTitle?: string; aiTitle?: string; message?: { content?: unknown } };
+    try {
+      entry = JSON.parse(line);
+    } catch {
+      continue;
+    }
+    if (!cwd && typeof entry.cwd === "string") cwd = entry.cwd;
+    if (entry.type === "custom-title" && entry.customTitle) named = entry.customTitle;
+    else if (entry.type === "ai-title" && entry.aiTitle && !named) named = entry.aiTitle;
+    else if (!firstPrompt && entry.type === "user" && !entry.isMeta && !entry.isSidechain) firstPrompt = firstUserText(entry.message?.content);
+  }
+  const title = named ?? firstPrompt?.replace(/\s+/g, " ").slice(0, 100);
+  return { cwd, title };
+}
+
+export async function listTranscripts(
+  opts: { cwd?: string | null; cursor?: string | null; pageSize?: number },
+  env: NodeJS.ProcessEnv = process.env,
+): Promise<acp.ListSessionsResponse> {
+  const root = claudeProjectsDir(env);
+  const projects = await readdir(root).catch(() => [] as string[]);
+  const found: Listed[] = [];
+  for (const project of projects) {
+    const files = await readdir(join(root, project)).catch(() => [] as string[]);
+    for (const name of files) {
+      if (!name.endsWith(".jsonl")) continue;
+      const file = join(root, project, name);
+      const info = await stat(file).catch(() => undefined);
+      if (!info?.isFile()) continue;
+      const { cwd, title } = summariseTranscript(await readFile(file, "utf8").catch(() => ""));
+      if (!cwd || (opts.cwd && cwd !== opts.cwd)) continue;
+      found.push({
+        mtime: info.mtimeMs,
+        info: { sessionId: name.slice(0, -".jsonl".length), cwd, title: title ?? null, updatedAt: info.mtime.toISOString() },
+      });
+    }
+  }
+  found.sort((a, b) => b.mtime - a.mtime || a.info.sessionId.localeCompare(b.info.sessionId));
+  const start = Math.max(0, Number.parseInt(opts.cursor ?? "0", 10) || 0);
+  const size = opts.pageSize ?? SESSION_PAGE_SIZE;
+  const page = found.slice(start, start + size).map((f) => f.info);
+  return { sessions: page, ...(start + size < found.length ? { nextCursor: String(start + size) } : {}) };
+}
