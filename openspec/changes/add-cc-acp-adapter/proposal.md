@@ -15,4 +15,4 @@ Anthropic is removing Agent SDK usage from Claude subscriptions, so Zed's SDK-ba
 ## Impact
 - Affected specs (all new): `acp-agent`, `host-session`, `adapter-mod-channel`, `prompt-turns`, `permissions`, `modes-and-models`, `mcp-proxy`, `session-management`, `packaging`
 - Affected code: entire repository (greenfield)
-- Clients switch by changing their agent command to `npx --yes cc-acp`
+- Clients switch by changing their agent command to `npx --yes @mintopia/cc-acp`

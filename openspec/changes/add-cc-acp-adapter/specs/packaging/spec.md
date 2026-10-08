@@ -1,10 +1,10 @@
 ## ADDED Requirements
 
 ### Requirement: Drop-in npm package
-The project SHALL publish an npm package `cc-acp` whose `cc-acp` binary is the Adapter and which bundles the Mod, so Clients switch by changing their command to `npx --yes cc-acp` and users install nothing into `~/.claude`.
+The project SHALL publish an npm package `@mintopia/cc-acp` whose `cc-acp` binary is the Adapter and which bundles the Mod, so Clients switch by changing their command to `npx --yes @mintopia/cc-acp` and users install nothing into `~/.claude`.
 
 #### Scenario: Harmonic switch
-- **WHEN** Harmonic's Claude harness command is set to `npx --yes cc-acp`
+- **WHEN** Harmonic's Claude harness command is set to `npx --yes @mintopia/cc-acp`
 - **THEN** Harmonic conversations work without other configuration changes
 
 ### Requirement: Reference Adapter compatible configuration

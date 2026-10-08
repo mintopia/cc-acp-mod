@@ -53,21 +53,21 @@ cc-acp next to the Reference Adapter, `@agentclientprotocol/claude-agent-acp` 0.
 Nothing to install. Run it with:
 
 ```sh
-npx --yes cc-acp
+npx --yes @mintopia/cc-acp
 ```
 
 `cc-acp --version` prints the version. The Adapter speaks ACP over stdio, so you normally let a Client launch it.
 
 ## Client configuration
 
-Set the Client's agent command to `npx --yes cc-acp` with the stdio transport.
+Set the Client's agent command to `npx --yes @mintopia/cc-acp` with the stdio transport.
 
-For Harmonic, set the Claude harness command to `npx --yes cc-acp`. Nothing else needs changing.
+For Harmonic, set the Claude harness command to `npx --yes @mintopia/cc-acp`. Nothing else needs changing.
 
 For a generic ACP Client, use:
 
 ```json
-{ "command": "npx", "args": ["--yes", "cc-acp"] }
+{ "command": "npx", "args": ["--yes", "@mintopia/cc-acp"] }
 ```
 
 ## Configuration
@@ -124,6 +124,16 @@ npm run e2e
 ```
 
 It uses real model turns, so it needs credentials, takes a few minutes and costs tokens. It is not part of `npm test`.
+
+### Releasing
+
+`develop` is the working branch and `main` holds releases. Commit messages follow [Conventional Commits](https://www.conventionalcommits.org): `fix:` bumps the patch version, `feat:` the minor version, and `feat!:` or a `BREAKING CHANGE:` footer the major version (minor while below 1.0).
+
+1. Merge `develop` into `main`.
+2. release-please opens or updates a release PR on `main` with the version bump and CHANGELOG.
+3. Merge the release PR. The Release workflow tags `vX.Y.Z`, creates the GitHub release, publishes `@mintopia/cc-acp` to npm and opens a PR merging `main` back into `develop`.
+
+See [ADR-0005](docs/adr/0005-gitflow-releases-with-release-please.md).
 
 See `GLOSSARY.md` for the terms used here and `docs/adr/` for the design decisions.
 
