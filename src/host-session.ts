@@ -6,11 +6,13 @@ import { checkClaudeVersion, checkTmux, trustDirectory } from "./launch.js";
 import { socketDir, socketPath } from "./paths.js";
 import { initialModelId } from "./models.js";
 import type { Hello, ModEvent } from "./protocol.js";
-import { forwardedEnv, killSession, sendEnter, startSession } from "./tmux.js";
+import { forwardedEnv, hasSession, killSession, sendEnter, startSession } from "./tmux.js";
 
 export const MOD_DIR = join(dirname(fileURLToPath(import.meta.url)), "..", "mod");
 
 const STARTUP_TIMEOUT_MS = 60_000;
+const REATTACH_TIMEOUT_MS = 15_000;
+const BUFFERED_DRAIN_TIMEOUT_MS = 5_000;
 
 export interface HostSession {
   sessionId: string;
@@ -27,7 +29,9 @@ export async function launchHostSession(opts: {
   resume?: boolean;
   forkFrom?: string;
   onEvent: (event: ModEvent) => void;
+  onDisplaced?: () => void;
   startupTimeoutMs?: number;
+  reattachTimeoutMs?: number;
 }): Promise<HostSession> {
   const env = opts.env ?? process.env;
   const executable = env.CLAUDE_CODE_EXECUTABLE || "claude";
@@ -37,7 +41,18 @@ export async function launchHostSession(opts: {
 
   const channel = new SessionChannel(socketPath(opts.sessionId, env));
   channel.onEvent = opts.onEvent;
+  channel.onDisplaced = opts.onDisplaced ?? (() => {});
   await channel.listen();
+
+  if (opts.resume && !opts.forkFrom && (await hasSession(opts.sessionId))) {
+    try {
+      const hello = await channel.waitForHello(opts.reattachTimeoutMs ?? REATTACH_TIMEOUT_MS);
+      await channel.waitForBuffered(BUFFERED_DRAIN_TIMEOUT_MS);
+      return { sessionId: opts.sessionId, channel, steering: hello.steering === true };
+    } catch {
+      await killSession(opts.sessionId);
+    }
+  }
 
   const argv = [executable, "--plugin-dir", MOD_DIR, ...sessionArgs(opts)];
   argv.push(...modelArgs(env));

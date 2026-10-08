@@ -3,6 +3,8 @@ import type { Register } from 'claude-code'
 const PROTOCOL_VERSION = 1
 const MOD_VERSION = '0.1.0'
 const RETRY_MS = 1_000
+const MAX_RETRY_MS = 5_000
+const MAX_BUFFERED = 5_000
 const TITLE_MAX = 80
 
 type Event =
@@ -19,11 +21,19 @@ type Event =
   | { type: 'ask_question'; requestId: string; questions: unknown[] }
   | { type: 'permission_request'; requestId: string; tool: string; input: Record<string, unknown>; toolUseId?: string; suggestions?: unknown[] }
 
+const conn = { plugin: 'cc-acp-mod', key: 'conn' } as const
+
 let outbox: Event[] = []
 let flushing = false
 let connected = false
 let socketPath: string | undefined
 let started = false
+let retryMs = RETRY_MS
+let reconnectScheduled = false
+let pollEpoch = 0
+let persistQueued = false
+type PermissionRequest = Extract<Event, { type: 'permission_request' }>
+const pending = new Map<string, PermissionRequest>()
 let lastModel: string | undefined
 let lastTitle: string | undefined
 let lastCommands: string | undefined
@@ -31,13 +41,51 @@ let nextRequest = 0
 const pendingQuestions = new Map<string, (answers: Record<string, string> | null) => void>()
 let permissionSeq = 0
 
-function post($: any, path: string, body: unknown) {
-  return $.http.fetch(`http://adapter${path}`, {
+async function post($: any, path: string, body: unknown) {
+  const res = await $.http.fetch(`http://adapter${path}`, {
     method: 'POST',
     socketPath,
     body: JSON.stringify(body),
     headers: { 'content-type': 'application/json' },
   })
+  if (res.status >= 300) throw new Error(`${path} -> ${res.status}`)
+  return res
+}
+
+function persist($: any) {
+  if (persistQueued) return
+  persistQueued = true
+  $.clock.after(0, async () => {
+    persistQueued = false
+    try {
+      await $.state.set(conn, { socketPath: socketPath ?? '', outbox, pending: [...pending.values()] })
+    } catch {}
+  })
+}
+
+async function restore($: any): Promise<void> {
+  try {
+    const { value } = await $.state.get(conn)
+    if (!value) return
+    socketPath = socketPath ?? (value.socketPath || undefined)
+    outbox = [...(value.outbox as Event[]), ...outbox]
+    for (const p of value.pending as PermissionRequest[]) pending.set(p.requestId, p)
+  } catch {}
+}
+
+function scheduleReconnect($: any) {
+  if (reconnectScheduled) return
+  reconnectScheduled = true
+  const delay = retryMs
+  retryMs = Math.min(retryMs * 2, MAX_RETRY_MS)
+  $.clock.after(delay, () => connect($))
+}
+
+function markDisconnected($: any) {
+  if (!connected) return
+  connected = false
+  pollEpoch++
+  scheduleReconnect($)
 }
 
 async function flush($: any): Promise<void> {
@@ -51,10 +99,12 @@ async function flush($: any): Promise<void> {
         await post($, '/events', { events: batch })
       } catch {
         outbox = [...batch, ...outbox]
-        $.clock.after(RETRY_MS, () => flush($))
+        persist($)
+        markDisconnected($)
         return
       }
     }
+    persist($)
   } finally {
     flushing = false
   }
@@ -62,6 +112,8 @@ async function flush($: any): Promise<void> {
 
 function emit($: any, event: Event) {
   outbox.push(event)
+  if (outbox.length > MAX_BUFFERED) outbox.splice(0, outbox.length - MAX_BUFFERED)
+  persist($)
   void flush($)
 }
 
@@ -156,13 +208,15 @@ function runCommand(
   }
 }
 
-async function pollOnce($: any): Promise<void> {
+async function pollOnce($: any, epoch: number): Promise<void> {
+  if (epoch !== pollEpoch) return
   try {
     const res = await $.http.fetch('http://adapter/poll', { socketPath })
+    if (res.status === 409) throw new Error('Adapter has not seen hello')
     if (res.status === 200) runCommand($, JSON.parse(res.text))
-    $.clock.after(0, () => pollOnce($))
+    if (epoch === pollEpoch) $.clock.after(0, () => pollOnce($, epoch))
   } catch {
-    $.clock.after(RETRY_MS, () => pollOnce($))
+    if (epoch === pollEpoch) markDisconnected($)
   }
 }
 
@@ -176,16 +230,21 @@ async function steeringSupported($: any): Promise<boolean> {
 }
 
 async function connect($: any): Promise<void> {
+  reconnectScheduled = false
   try {
     const sessionId = await $.session.id()
-    await post($, '/hello', { protocolVersion: PROTOCOL_VERSION, sessionId, modVersion: MOD_VERSION,
-      steering: await steeringSupported($),
-    })
+    const steering = await steeringSupported($)
+    for (const request of pending.values()) {
+      if (!outbox.some((e) => e.type === 'permission_request' && e.requestId === request.requestId)) outbox.push(request)
+    }
+    await post($, '/hello', { protocolVersion: PROTOCOL_VERSION, sessionId, modVersion: MOD_VERSION, steering, buffered: outbox.length })
     connected = true
+    retryMs = RETRY_MS
     void flush($)
-    $.clock.after(0, () => pollOnce($))
+    const epoch = ++pollEpoch
+    $.clock.after(0, () => pollOnce($, epoch))
   } catch {
-    $.clock.after(RETRY_MS, () => connect($))
+    scheduleReconnect($)
   }
 }
 
@@ -194,6 +253,7 @@ async function awaitDecision($: any, requestId: string): Promise<string> {
     try {
       const res = await $.http.fetch(`http://adapter/permission?id=${encodeURIComponent(requestId)}`, { socketPath })
       if (res.status === 200) return JSON.parse(res.text).decision
+      if (res.status === 409) await new Promise<void>((resolve) => $.clock.after(RETRY_MS, resolve))
     } catch {
       await new Promise<void>((resolve) => $.clock.after(RETRY_MS, resolve))
     }
@@ -204,6 +264,7 @@ export const register: Register = (on) => {
   on('session.start', async ($, e, next) => {
     if (!started) {
       started = true
+      await restore($)
       const dir = (await $.process.run(['printenv', 'CC_ACP_SOCKET_DIR'])).stdout.trim()
       const sessionId = await $.session.id()
       socketPath = `${dir}/${sessionId}.sock`
@@ -251,14 +312,18 @@ export const register: Register = (on) => {
     }
     const requestId = `${Date.now()}-${++permissionSeq}`
     const suggestions = e.permission_suggestions
-    emit($, {
-      type: 'permission_request',
+    const request = {
+      type: 'permission_request' as const,
       requestId,
       tool: e.tool_name,
       input: input ?? {},
-      suggestions: Array.isArray(suggestions) ? suggestions : undefined,
-    })
+      ...(Array.isArray(suggestions) ? { suggestions } : {}),
+    }
+    pending.set(requestId, request)
+    emit($, request)
     const decision = await awaitDecision($, requestId)
+    pending.delete(requestId)
+    persist($)
     if (decision === 'allow_once') return { decision: { behavior: 'allow' } }
     if (decision === 'allow_with_updates') {
       return { decision: { behavior: 'allow', ...(Array.isArray(suggestions) ? { updatedPermissions: suggestions } : {}) } }

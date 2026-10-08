@@ -440,3 +440,58 @@ test("a cancelled outcome from the client denies the tool", async () => {
   await tick();
   expect(h.answers).toEqual([["r1", "reject"]]);
 });
+
+test("a permission request pending while the Client is gone is re-sent when the session is loaded again", async () => {
+  let attempt = 0;
+  const h = permissionHarness(async () => {
+    if (attempt++ === 0) throw new Error("Client disconnected");
+    return { outcome: { outcome: "selected", optionId: "allow-once" } };
+  });
+  const { sessionId } = await h.agent.newSession({ cwd: "/", mcpServers: [] });
+  h.emit(h.request);
+  await tick();
+  expect(h.answers).toEqual([]);
+  await h.agent.loadSession({ sessionId, cwd: "/", mcpServers: [] });
+  await tick();
+  expect(h.requests).toHaveLength(2);
+  expect(h.answers).toEqual([["r1", "allow_once"]]);
+});
+
+test("a permission request re-emitted by the Mod after Reattach is bridged once", async () => {
+  const h = permissionHarness(() => new Promise(() => {}));
+  await h.agent.newSession({ cwd: "/", mcpServers: [] });
+  h.emit(h.request);
+  h.emit(h.request);
+  await tick();
+  expect(h.requests).toHaveLength(1);
+});
+
+test("a permission request buffered before the session is registered is bridged after launch (Reattach)", async () => {
+  const requests: any[] = [];
+  const launch: HostLauncher = async ({ sessionId, onEvent }) => {
+    onEvent({ type: "permission_request", requestId: "r9", tool: "Bash", input: {} });
+    return { sessionId, channel: { send: () => {}, close: async () => {}, answerPermission: () => {} } };
+  };
+  const agent = new CcAcpAgent(
+    { sessionUpdate: async () => {}, requestPermission: async (p) => (requests.push(p), new Promise(() => {})) },
+    "0",
+    launch,
+  );
+  await agent.loadSession({ sessionId: "00000000-0000-0000-0000-000000000009", cwd: "/", mcpServers: [] });
+  await tick();
+  expect(requests).toHaveLength(1);
+});
+
+test("when displaced by a newer Owner the session ends: the running prompt rejects and the session is gone", async () => {
+  let displaced!: () => void;
+  const launch: HostLauncher = async ({ sessionId, onDisplaced }) => {
+    displaced = onDisplaced!;
+    return { sessionId, channel: { send: () => {}, close: async () => {} } };
+  };
+  const agent = new CcAcpAgent({ sessionUpdate: async () => {} }, "0", launch);
+  const { sessionId } = await agent.newSession({ cwd: "/", mcpServers: [] });
+  const p = agent.prompt(promptOf(sessionId, "a"));
+  displaced();
+  await expect(p).rejects.toThrow(/taken over/);
+  await expect(agent.prompt(promptOf(sessionId, "b"))).rejects.toThrow(/Unknown session/);
+});

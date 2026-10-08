@@ -42,3 +42,10 @@ export async function killSession(sessionId: string): Promise<void> {
 export async function sendEnter(sessionId: string): Promise<void> {
   await run("tmux", ["-L", TMUX_SOCKET, "send-keys", "-t", sessionName(sessionId), "Enter"]);
 }
+
+export async function hasSession(sessionId: string): Promise<boolean> {
+  return run("tmux", ["-L", TMUX_SOCKET, "has-session", "-t", `=${sessionName(sessionId)}`]).then(
+    () => true,
+    () => false,
+  );
+}

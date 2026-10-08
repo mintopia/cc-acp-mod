@@ -1,7 +1,9 @@
-import { chmod, mkdir, rm } from "node:fs/promises";
+import { chmod, mkdir, rm, stat } from "node:fs/promises";
 import { createServer, type IncomingMessage, type Server, type ServerResponse } from "node:http";
 import { dirname } from "node:path";
 import { POLL_WINDOW_MS, type Command, type Hello, type ModEvent, type PermissionDecision } from "./protocol.js";
+
+const OWNERSHIP_CHECK_MS = 500;
 
 type Waiter = { resolve: (cmd: Command | null) => void; timer: NodeJS.Timeout };
 
@@ -14,6 +16,14 @@ export class SessionChannel {
   private readonly answers = new Map<string, PermissionDecision>();
   private readonly answerWaiters = new Map<string, { resolve: (d: PermissionDecision | null) => void; timer: NodeJS.Timeout }>();
   onEvent: (event: ModEvent) => void = () => {};
+  onDisplaced: () => void = () => {};
+  private inode?: number;
+  private watcher?: NodeJS.Timeout;
+  private displaced = false;
+  private helloed = false;
+  private buffered = 0;
+  private received = 0;
+  private bufferedWaiters: Array<() => void> = [];
 
   constructor(readonly path: string, private readonly pollWindowMs = POLL_WINDOW_MS) {
     this.helloPromise = new Promise((resolve) => (this.helloResolve = resolve));
@@ -28,6 +38,35 @@ export class SessionChannel {
       this.server!.listen(this.path, resolve);
     });
     await chmod(this.path, 0o600);
+    this.inode = (await stat(this.path)).ino;
+    this.watcher = setInterval(() => void this.checkOwnership(), OWNERSHIP_CHECK_MS);
+    this.watcher.unref();
+  }
+
+  private async checkOwnership(): Promise<void> {
+    const current = await stat(this.path).then((s) => s.ino, () => undefined);
+    if (current === undefined || current === this.inode || this.displaced) return;
+    this.displaced = true;
+    clearInterval(this.watcher);
+    this.onDisplaced();
+  }
+
+  waitForBuffered(timeoutMs: number): Promise<void> {
+    if (this.received >= this.buffered) return Promise.resolve();
+    return new Promise((resolve) => {
+      const done = () => {
+        clearTimeout(timer);
+        resolve();
+      };
+      const timer = setTimeout(done, timeoutMs);
+      this.bufferedWaiters.push(done);
+    });
+  }
+
+  private countEvents(n: number): void {
+    this.received += n;
+    if (this.received < this.buffered) return;
+    for (const done of this.bufferedWaiters.splice(0)) done();
   }
 
   waitForHello(timeoutMs: number): Promise<Hello> {
@@ -66,6 +105,8 @@ export class SessionChannel {
   }
 
   async close(): Promise<void> {
+    clearInterval(this.watcher);
+    for (const done of this.bufferedWaiters.splice(0)) done();
     for (const { resolve, timer } of this.answerWaiters.values()) {
       clearTimeout(timer);
       resolve(null);
@@ -74,19 +115,29 @@ export class SessionChannel {
     this.waiter?.resolve(null);
     if (this.waiter) clearTimeout(this.waiter.timer);
     this.waiter = undefined;
+    if (this.displaced) {
+      this.server?.unref();
+      return;
+    }
     await new Promise<void>((resolve) => (this.server ? this.server.close(() => resolve()) : resolve()));
     await rm(this.path, { force: true });
   }
 
   private async handle(req: IncomingMessage, res: ServerResponse): Promise<void> {
     try {
+      if (!this.helloed && req.url !== "/hello") return reply(res, 409);
       if (req.method === "POST" && req.url === "/hello") {
-        this.helloResolve(await readJson<Hello>(req));
+        const hello = await readJson<Hello>(req);
+        this.buffered = hello.buffered ?? 0;
+        this.received = 0;
+        this.helloed = true;
+        this.helloResolve(hello);
         return reply(res, 204);
       }
       if (req.method === "POST" && req.url === "/events") {
         const { events } = await readJson<{ events: ModEvent[] }>(req);
         for (const event of events) this.onEvent(event);
+        this.countEvents(events.length);
         return reply(res, 204);
       }
       if (req.method === "GET" && req.url === "/poll") {
