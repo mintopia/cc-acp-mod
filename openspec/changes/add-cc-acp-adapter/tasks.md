@@ -29,5 +29,5 @@ Each task maps to one GitHub issue (child of the epic). "Blocked by" lists task 
 - [ ] 2.4 Image and resource prompts — blocked by: 1.2
 - [ ] 2.5 Diffs and terminal output on tool calls — blocked by: 1.4
 - [ ] 2.6 Effort and fast config options — blocked by: 1.9
-- [ ] 2.7 Steering — blocked by: 1.5
+- [x] 2.7 Steering — blocked by: 1.5
 - [ ] 2.8 Terminal login methods — blocked by: 1.2

@@ -134,3 +134,29 @@ test("TaskCreate and TaskUpdate produce plan updates", async () => {
     { sessionUpdate: "plan", entries: [{ content: "A", status: "in_progress", priority: "medium" }] },
   ]);
 });
+
+function steeringHarness(steering: boolean) {
+  const sent: Command[] = [];
+  const launch: HostLauncher = async ({ sessionId }) => ({
+    sessionId,
+    steering,
+    channel: { send: (c) => void sent.push(c), close: async () => {} },
+  });
+  return { agent: new CcAcpAgent({ sessionUpdate: async () => {} }, "0", launch), sent };
+}
+
+test("steering supported: advertised in _meta and delivered into the running turn", async () => {
+  const h = steeringHarness(true);
+  const res = await h.agent.newSession({ cwd: "/", mcpServers: [] });
+  expect(res._meta).toEqual({ steering: { supported: true } });
+  void h.agent.prompt(promptOf(res.sessionId, "a"));
+  await h.agent.steer({ sessionId: res.sessionId, prompt: [{ type: "text", text: "go left" }] });
+  expect(h.sent).toEqual([{ type: "prompt", text: "a" }, { type: "steer", text: "go left" }]);
+});
+
+test("steering unsupported: advertised false and method not found", async () => {
+  const h = steeringHarness(false);
+  const res = await h.agent.newSession({ cwd: "/", mcpServers: [] });
+  expect(res._meta).toEqual({ steering: { supported: false } });
+  await expect(h.agent.steer({ sessionId: res.sessionId, prompt: [] })).rejects.toMatchObject({ code: -32601 });
+});

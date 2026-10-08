@@ -4,7 +4,7 @@ import { SessionChannel } from "./channel.js";
 import { checkClaudeVersion, checkTmux, trustDirectory } from "./launch.js";
 import { socketDir, socketPath } from "./paths.js";
 import { initialModelId } from "./models.js";
-import type { ModEvent } from "./protocol.js";
+import type { Hello, ModEvent } from "./protocol.js";
 import { forwardedEnv, killSession, sendEnter, startSession } from "./tmux.js";
 
 export const MOD_DIR = join(dirname(fileURLToPath(import.meta.url)), "..", "mod");
@@ -14,6 +14,7 @@ const STARTUP_TIMEOUT_MS = 60_000;
 export interface HostSession {
   sessionId: string;
   channel: SessionChannel;
+  steering: boolean;
 }
 
 export async function launchHostSession(opts: {
@@ -36,6 +37,7 @@ export async function launchHostSession(opts: {
   const argv = [executable, "--plugin-dir", MOD_DIR, "--session-id", opts.sessionId];
   argv.push(...modelArgs(env));
 
+  let hello: Hello;
   try {
     await startSession({
       sessionId: opts.sessionId,
@@ -43,7 +45,7 @@ export async function launchHostSession(opts: {
       argv,
       env: { ...forwardedEnv(env), CC_ACP_SOCKET_DIR: socketDir(env) },
     });
-    await channel.waitForHello(opts.startupTimeoutMs ?? STARTUP_TIMEOUT_MS);
+    hello = await channel.waitForHello(opts.startupTimeoutMs ?? STARTUP_TIMEOUT_MS);
   } catch (err) {
     await killSession(opts.sessionId);
     await channel.close();
@@ -52,7 +54,7 @@ export async function launchHostSession(opts: {
         `Likely cause: a startup dialog blocked Claude Code or the Mod failed to load.`,
     );
   }
-  return { sessionId: opts.sessionId, channel };
+  return { sessionId: opts.sessionId, channel, steering: hello.steering === true };
 }
 
 export async function stopHostSession(host: HostSession): Promise<void> {

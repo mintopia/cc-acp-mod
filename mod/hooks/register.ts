@@ -66,6 +66,8 @@ async function reportModel($: any): Promise<void> {
 function runCommand($: any, command: { type: string; text?: string; id?: string }) {
   if (command.type === 'prompt' && command.text !== undefined) {
     void $.prompt.submit({ text: command.text }).catch(() => emit($, { type: 'turn_completed', reason: 'error' }))
+  } else if (command.type === 'steer' && command.text !== undefined) {
+    void $.prompt.steer({ text: command.text }).catch(() => {})
   } else if (command.type === 'cancel') {
     void $.turn.abort().catch(() => {})
   } else if (command.type === 'set_model' && command.id !== undefined) {
@@ -89,7 +91,9 @@ async function pollOnce($: any): Promise<void> {
 async function connect($: any): Promise<void> {
   try {
     const sessionId = await $.session.id()
-    await post($, '/hello', { protocolVersion: PROTOCOL_VERSION, sessionId, modVersion: MOD_VERSION })
+    await post($, '/hello', { protocolVersion: PROTOCOL_VERSION, sessionId, modVersion: MOD_VERSION,
+      steering: typeof $.prompt?.steer === 'function',
+    })
     connected = true
     void flush($)
     $.clock.after(0, () => pollOnce($))

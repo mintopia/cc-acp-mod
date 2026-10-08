@@ -14,7 +14,7 @@ export type HostLauncher = (opts: {
   cwd: string;
   env?: NodeJS.ProcessEnv;
   onEvent: (event: ModEvent) => void;
-}) => Promise<Pick<HostSession, "sessionId"> & { channel: Pick<HostSession["channel"], "send" | "close"> }>;
+}) => Promise<Pick<HostSession, "sessionId"> & { steering?: boolean; channel: Pick<HostSession["channel"], "send" | "close"> }>;
 
 interface QueuedPrompt {
   text: string;
@@ -90,7 +90,7 @@ export class CcAcpAgent {
       modelWaiters: new Map(),
     };
     this.sessions.set(sessionId, session);
-    return { sessionId, configOptions: [modelOption(session)] };
+    return { sessionId, configOptions: [modelOption(session)], _meta: { steering: { supported: host.steering === true } } };
   }
 
   async setSessionConfigOption(params: acp.SetSessionConfigOptionRequest): Promise<acp.SetSessionConfigOptionResponse> {
@@ -108,6 +108,16 @@ export class CcAcpAgent {
       }
     }
     return { configOptions: [modelOption(session)] };
+  }
+
+  async steer(params: { sessionId: string; prompt: acp.ContentBlock[] }): Promise<Record<string, never>> {
+    const session = this.sessions.get(params.sessionId);
+    if (!session) throw new Error(`Unknown session ${params.sessionId}`);
+    if (!session.host.steering) throw acp.RequestError.methodNotFound("_session/steering");
+    if (!session.current) throw new Error("No running turn to steer");
+    const text = params.prompt.map((block) => (block.type === "text" ? block.text : "")).join("");
+    session.host.channel.send({ type: "steer", text });
+    return {};
   }
 
   async authenticate(): Promise<void> {}

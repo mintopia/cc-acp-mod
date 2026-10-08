@@ -25,6 +25,7 @@ const conn = acp
   .onRequest(AGENT_METHODS.session_new, (ctx) => agent!.newSession(ctx.params))
   .onRequest(AGENT_METHODS.authenticate, async () => (await agent!.authenticate(), {}))
   .onRequest(AGENT_METHODS.session_prompt, (ctx) => agent!.prompt(ctx.params, ctx.signal))
+  .onRequest("_session/steering", (params) => params as Parameters<CcAcpAgent["steer"]>[0], (ctx) => agent!.steer(ctx.params))
   .onNotification(AGENT_METHODS.session_cancel, (ctx) => agent!.cancel(ctx.params))
   .connect(stream);
 void conn.closed.then(() => agent?.close()).finally(() => process.exit(0));
