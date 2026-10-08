@@ -4,11 +4,12 @@ import { formAnswers, questionForm } from "./ask-user-question.js";
 import { launchHostSession, switchModel, type HostSession } from "./host-session.js";
 import { MODEL_CONFIG_ID, buildModelList, initialModelId, type ModelInfo } from "./models.js";
 import { TaskPlan, planEntries, toolInfo } from "./tool-mapping.js";
-import type { ModEvent, TurnReason } from "./protocol.js";
+import type { ModEvent, PermissionDecision, TurnReason } from "./protocol.js";
 
 export interface UpdateSink {
   sessionUpdate(params: acp.SessionNotification): Promise<void>;
   createElicitation?(params: acp.CreateElicitationRequest): Promise<acp.CreateElicitationResponse>;
+  requestPermission?(params: acp.RequestPermissionRequest): Promise<acp.RequestPermissionResponse>;
 }
 
 export type HostLauncher = (opts: {
@@ -17,7 +18,7 @@ export type HostLauncher = (opts: {
   env?: NodeJS.ProcessEnv;
   disallowedTools?: string[];
   onEvent: (event: ModEvent) => void;
-}) => Promise<Pick<HostSession, "sessionId"> & { steering?: boolean; channel: Pick<HostSession["channel"], "send" | "close"> }>;
+}) => Promise<Pick<HostSession, "sessionId"> & { steering?: boolean; channel: Pick<HostSession["channel"], "send" | "close"> & Partial<Pick<HostSession["channel"], "answerPermission">> }>;
 
 interface QueuedPrompt {
   text: string;
@@ -38,6 +39,7 @@ interface Session {
   effort: string;
   fast: string;
   configWaiters: Map<string, () => void>;
+  pendingPermissions: Map<string, () => void>;
 }
 
 export const EFFORT_CONFIG_ID = "effort";
@@ -128,6 +130,7 @@ export class CcAcpAgent {
       effort: "high",
       fast: "off",
       configWaiters: new Map(),
+      pendingPermissions: new Map(),
     };
     this.sessions.set(sessionId, session);
     return { sessionId, configOptions: configOptions(session), _meta: { steering: { supported: host.steering === true } } };
@@ -220,6 +223,7 @@ export class CcAcpAgent {
     if (entry === session.current) {
       if (entry.cancelRequested) return;
       entry.cancelRequested = true;
+      for (const deny of [...session.pendingPermissions.values()]) deny();
       session.host.channel.send({ type: "cancel" });
       return;
     }
@@ -245,6 +249,38 @@ export class CcAcpAgent {
       } catch {}
     }
     session.host.channel.send({ type: "question_answer", requestId: event.requestId, answers });
+  }
+
+  private async bridgePermission(
+    sessionId: string,
+    session: Session,
+    event: Extract<ModEvent, { type: "permission_request" }>,
+  ): Promise<void> {
+    let answered = false;
+    const answer = (decision: PermissionDecision) => {
+      if (answered) return;
+      answered = true;
+      session.pendingPermissions.delete(event.requestId);
+      session.host.channel.answerPermission?.(event.requestId, decision);
+    };
+    session.pendingPermissions.set(event.requestId, () => answer("reject"));
+    if (!this.client.requestPermission) return answer("reject");
+    const toolCallId = event.toolUseId ?? event.requestId;
+    try {
+      const res = await this.client.requestPermission({
+        sessionId,
+        toolCall: { toolCallId, ...toolInfo(event.tool, event.input), rawInput: event.input },
+        options: [
+          { optionId: "allow-once", name: "Allow once", kind: "allow_once" },
+          { optionId: "allow-with-updates", name: "Always allow", kind: "allow_always" },
+          { optionId: "reject", name: "Reject", kind: "reject_once" },
+        ],
+      });
+      const optionId = res.outcome.outcome === "selected" ? res.outcome.optionId : undefined;
+      answer(optionId === "allow-once" ? "allow_once" : optionId === "allow-with-updates" ? "allow_with_updates" : "reject");
+    } catch {
+      answer("reject");
+    }
   }
 
   private async onEvent(sessionId: string, event: ModEvent): Promise<void> {
@@ -273,6 +309,8 @@ export class CcAcpAgent {
         sessionId,
         update: { sessionUpdate: "config_option_update", configOptions: configOptions(session) },
       });
+    } else if (event.type === "permission_request" && session) {
+      void this.bridgePermission(sessionId, session, event);
     } else if (event.type === "tool_started") {
       session?.tools.set(event.toolUseId, { tool: event.tool, input: event.input });
       const info = toolInfo(event.tool, event.input);
@@ -309,6 +347,7 @@ export class CcAcpAgent {
     } else if (event.type === "turn_completed" && session?.current) {
       const done = session.current;
       session.current = undefined;
+      for (const deny of [...session.pendingPermissions.values()]) deny();
       const stopReason = done.cancelRequested && event.reason !== "error" ? "cancelled" : STOP_REASONS[event.reason];
       if (stopReason) done.resolve(stopReason);
       else done.reject(new Error(`Turn ended with ${event.reason}`));

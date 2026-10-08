@@ -79,3 +79,15 @@ test("malformed bodies and unknown routes are rejected", async () => {
   expect((await call("POST", "/events", { nope: 1 })).status).toBe(400);
   expect((await call("GET", "/nope")).status).toBe(404);
 });
+
+test("permission poll returns an answer given before or during the poll, else 204 after the window", async () => {
+  channel.answerPermission("a", "allow_once");
+  expect(JSON.parse((await call("GET", "/permission?id=a")).body)).toEqual({ decision: "allow_once" });
+
+  const pending = call("GET", "/permission?id=b");
+  await new Promise((r) => setTimeout(r, 20));
+  channel.answerPermission("b", "reject");
+  expect(JSON.parse((await pending).body)).toEqual({ decision: "reject" });
+
+  expect((await call("GET", "/permission?id=c")).status).toBe(204);
+});

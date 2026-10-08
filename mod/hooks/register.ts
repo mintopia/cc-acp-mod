@@ -13,6 +13,7 @@ type Event =
   | { type: 'model_changed'; id: string }
   | { type: 'config_changed'; option: 'effort' | 'fast'; value: string }
   | { type: 'ask_question'; requestId: string; questions: unknown[] }
+  | { type: 'permission_request'; requestId: string; tool: string; input: Record<string, unknown>; toolUseId?: string; suggestions?: unknown[] }
 
 let outbox: Event[] = []
 let flushing = false
@@ -22,6 +23,7 @@ let started = false
 let lastModel: string | undefined
 let nextRequest = 0
 const pendingQuestions = new Map<string, (answers: Record<string, string> | null) => void>()
+let permissionSeq = 0
 
 function post($: any, path: string, body: unknown) {
   return $.http.fetch(`http://adapter${path}`, {
@@ -119,6 +121,17 @@ async function connect($: any): Promise<void> {
   }
 }
 
+async function awaitDecision($: any, requestId: string): Promise<string> {
+  for (;;) {
+    try {
+      const res = await $.http.fetch(`http://adapter/permission?id=${encodeURIComponent(requestId)}`, { socketPath })
+      if (res.status === 200) return JSON.parse(res.text).decision
+    } catch {
+      await new Promise<void>((resolve) => $.clock.after(RETRY_MS, resolve))
+    }
+  }
+}
+
 export const register: Register = (on) => {
   on('session.start', async ($, e, next) => {
     if (!started) {
@@ -157,15 +170,32 @@ export const register: Register = (on) => {
     return ran
   })
 
-  on('classic.PermissionRequest', async ($, e, next) => {
-    const input = (e as any).tool_input
-    if ((e as any).tool_name !== 'AskUserQuestion' || !Array.isArray(input?.questions)) return next(e)
-    const requestId = `q${++nextRequest}`
-    const answered = new Promise<Record<string, string> | null>((resolve) => pendingQuestions.set(requestId, resolve))
-    emit($, { type: 'ask_question', requestId, questions: input.questions })
-    const answers = await answered
-    if (answers === null) return { decision: { behavior: 'deny', message: 'The user declined to answer.' } }
-    return { decision: { behavior: 'allow', updatedInput: { ...input, answers } } }
+  on('classic.PermissionRequest', async ($: any, e: any, next: any) => {
+    const input = e.tool_input
+    if (e.tool_name === 'AskUserQuestion' && Array.isArray(input?.questions)) {
+      const requestId = `q${++nextRequest}`
+      const answered = new Promise<Record<string, string> | null>((resolve) => pendingQuestions.set(requestId, resolve))
+      emit($, { type: 'ask_question', requestId, questions: input.questions })
+      const answers = await answered
+      if (answers === null) return { decision: { behavior: 'deny', message: 'The user declined to answer.' } }
+      return { decision: { behavior: 'allow', updatedInput: { ...input, answers } } }
+    }
+    const requestId = `${Date.now()}-${++permissionSeq}`
+    const suggestions = e.permission_suggestions
+    emit($, {
+      type: 'permission_request',
+      requestId,
+      tool: e.tool_name,
+      input: input ?? {},
+      toolUseId: e.tool_use_id,
+      suggestions: Array.isArray(suggestions) ? suggestions : undefined,
+    })
+    const decision = await awaitDecision($, requestId)
+    if (decision === 'allow_once') return { decision: { behavior: 'allow' } }
+    if (decision === 'allow_with_updates') {
+      return { decision: { behavior: 'allow', ...(Array.isArray(suggestions) ? { updatedPermissions: suggestions } : {}) } }
+    }
+    return { decision: { behavior: 'deny', message: 'Denied by the ACP client' } }
   })
 
   on('turn.complete', async ($, e, next) => {

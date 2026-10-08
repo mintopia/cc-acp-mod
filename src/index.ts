@@ -23,6 +23,7 @@ const conn = acp
       {
         sessionUpdate: (p) => c.client.notify(CLIENT_METHODS.session_update, p),
         createElicitation: (p) => c.client.request(CLIENT_METHODS.elicitation_create, p),
+        requestPermission: (p) => c.client.request(CLIENT_METHODS.session_request_permission, p),
       },
       version,
     );

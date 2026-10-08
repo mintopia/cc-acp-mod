@@ -18,6 +18,8 @@ export type Command =
   | { type: "set_fast"; value: string }
   | { type: "question_answer"; requestId: string; answers: Record<string, string> | null };
 
+export type PermissionDecision = "allow_once" | "allow_with_updates" | "reject";
+
 export type TurnReason = "answer" | "aborted" | "refusal" | "error";
 
 export type ModEvent =
@@ -28,6 +30,14 @@ export type ModEvent =
   | { type: "turn_completed"; reason: TurnReason }
   | { type: "model_changed"; id: string }
   | { type: "config_changed"; option: "effort" | "fast"; value: string }
-  | { type: "ask_question"; requestId: string; questions: AskQuestion[] };
+  | { type: "ask_question"; requestId: string; questions: AskQuestion[] }
+  | {
+      type: "permission_request";
+      requestId: string;
+      tool: string;
+      input: Record<string, unknown>;
+      toolUseId?: string;
+      suggestions?: unknown[];
+    };
 
 export const POLL_WINDOW_MS = 20_000;
