@@ -15,14 +15,14 @@ The Host Session SHALL launch with `--permission-mode` set to the user's `permis
 - **THEN** the session's `currentModeId` is `acceptEdits`
 
 ### Requirement: Switching modes
-`session/set_mode` SHALL switch the Host Session's permission mode by sending Shift+Tab via `tmux send-keys` until the Mod reports the target mode, and SHALL emit `current_mode_update`. Mode changes made inside the session (e.g. EnterPlanMode) SHALL also emit `current_mode_update`.
+`session/set_mode` SHALL switch the Host Session's permission mode by sending Shift+Tab via `tmux send-keys` and reading the mode back through the Mod (the `permission_mode` on hook events) after each press, repeating up to a bounded number of presses until the Mod reports the target mode (the cycle order is not fixed and varies with launch mode and opt-ins), and SHALL emit `current_mode_update`. Mode changes made inside the session (e.g. EnterPlanMode) SHALL also emit `current_mode_update`.
 
 #### Scenario: Switch to plan
 - **WHEN** the Client calls `session/set_mode` with `plan`
 - **THEN** the Host Session ends in plan mode, the call succeeds, and `current_mode_update` reports `plan`
 
 ### Requirement: Models
-The Adapter SHALL offer a model list built from a built-in catalogue plus `CLAUDE_MODEL_CONFIG`, respect `ANTHROPIC_MODEL`, and implement `session/set_model` (and the `model` config option) via `$.command.run('model', id)`.
+The Adapter SHALL offer a model list built from a built-in catalogue plus `CLAUDE_MODEL_CONFIG`, respect `ANTHROPIC_MODEL`, and implement `session/set_model` (and the `model` config option) via `$.command.run({command:'model', args:id})`, which is queued until the session is idle, may open a confirmation dialog that the Adapter SHALL answer, and persists the model as the user's default; the initial model SHALL instead be set at launch.
 
 #### Scenario: Switch model
 - **WHEN** the Client calls `session/set_model` with a listed model id
