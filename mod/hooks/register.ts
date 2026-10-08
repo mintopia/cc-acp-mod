@@ -107,11 +107,20 @@ async function pollOnce($: any): Promise<void> {
   }
 }
 
+async function steeringSupported($: any): Promise<boolean> {
+  try {
+    await $.prompt.steer({ text: '' })
+  } catch (err) {
+    return !/not a function|undefined/i.test(String(err))
+  }
+  return true
+}
+
 async function connect($: any): Promise<void> {
   try {
     const sessionId = await $.session.id()
     await post($, '/hello', { protocolVersion: PROTOCOL_VERSION, sessionId, modVersion: MOD_VERSION,
-      steering: typeof $.prompt?.steer === 'function',
+      steering: await steeringSupported($),
     })
     connected = true
     void flush($)
@@ -187,7 +196,6 @@ export const register: Register = (on) => {
       requestId,
       tool: e.tool_name,
       input: input ?? {},
-      toolUseId: e.tool_use_id,
       suggestions: Array.isArray(suggestions) ? suggestions : undefined,
     })
     const decision = await awaitDecision($, requestId)
