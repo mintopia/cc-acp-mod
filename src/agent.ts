@@ -5,6 +5,7 @@ import { launchHostSession, switchModel, type HostSession } from "./host-session
 import { MODEL_CONFIG_ID, buildModelList, initialModelId, type ModelInfo } from "./models.js";
 import { SessionAttachments, promptText } from "./prompt-content.js";
 import { TaskPlan, bashOutput, diffContent, planEntries, toolInfo } from "./tool-mapping.js";
+import { readTranscript } from "./transcript.js";
 import type { ModEvent, TurnReason } from "./protocol.js";
 
 export interface UpdateSink {
@@ -17,6 +18,7 @@ export type HostLauncher = (opts: {
   cwd: string;
   env?: NodeJS.ProcessEnv;
   disallowedTools?: string[];
+  resume?: boolean;
   onEvent: (event: ModEvent) => void;
 }) => Promise<Pick<HostSession, "sessionId"> & { steering?: boolean; channel: Pick<HostSession["channel"], "send" | "close"> }>;
 
@@ -81,6 +83,17 @@ function modelOption(session: Pick<Session, "models" | "currentModel">): acp.Ses
   };
 }
 
+function modeState(env: NodeJS.ProcessEnv = process.env): acp.SessionModeState {
+  const modes = [
+    { id: "default", name: "Default" },
+    { id: "acceptEdits", name: "Accept Edits" },
+    { id: "plan", name: "Plan Mode" },
+    { id: "auto", name: "Auto" },
+  ];
+  if (process.getuid?.() !== 0 || env.IS_SANDBOX) modes.push({ id: "bypassPermissions", name: "Bypass Permissions" });
+  return { currentModeId: "default", availableModes: modes };
+}
+
 const STOP_REASONS: Partial<Record<TurnReason, acp.StopReason>> = {
   answer: "end_turn",
   aborted: "cancelled",
@@ -104,18 +117,31 @@ export class CcAcpAgent {
     return {
       protocolVersion: acp.PROTOCOL_VERSION,
       agentInfo: { name: "cc-acp", title: "Claude Code (cc-acp)", version: this.version },
-      agentCapabilities: { promptCapabilities: { image: true } },
+      agentCapabilities: { loadSession: true, promptCapabilities: { image: true } },
     };
   }
 
   async newSession(params: acp.NewSessionRequest): Promise<acp.NewSessionResponse> {
     const sessionId = randomUUID();
+    const session = await this.startSession(sessionId, params.cwd, false);
+    return { sessionId, configOptions: configOptions(session), _meta: { steering: { supported: session.host.steering === true } } };
+  }
+
+  async loadSession(params: acp.LoadSessionRequest): Promise<acp.LoadSessionResponse> {
+    const { sessionId } = params;
+    for (const update of await readTranscript(sessionId, process.env)) await this.client.sessionUpdate({ sessionId, update });
+    const session = this.sessions.get(sessionId) ?? (await this.startSession(sessionId, params.cwd, true));
+    return { modes: modeState(), configOptions: configOptions(session), _meta: { steering: { supported: session.host.steering === true } } };
+  }
+
+  private async startSession(sessionId: string, cwd: string, resume: boolean): Promise<Session> {
     const env = process.env;
     let events: Promise<void> = Promise.resolve();
     const host = await this.launch({
       sessionId,
-      cwd: params.cwd,
+      cwd,
       env,
+      resume,
       disallowedTools: this.formElicitation ? [] : ["AskUserQuestion"],
       onEvent: (event) => {
         if (event.type === "ask_question") return void this.askQuestion(sessionId, event);
@@ -136,7 +162,7 @@ export class CcAcpAgent {
       attachments: new SessionAttachments(sessionId, env),
     };
     this.sessions.set(sessionId, session);
-    return { sessionId, configOptions: configOptions(session), _meta: { steering: { supported: host.steering === true } } };
+    return session;
   }
 
   async setSessionConfigOption(params: acp.SetSessionConfigOptionRequest): Promise<acp.SetSessionConfigOptionResponse> {
