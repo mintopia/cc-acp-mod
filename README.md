@@ -48,7 +48,7 @@ All `ANTHROPIC_*` and `CLAUDE_*` variables are forwarded to the Host Session.
 
 ## Manual end-to-end suite
 
-`e2e/run.mjs` drives the built Adapter against a real, logged-in `claude` in tmux: initialize, `session/new` with a Client MCP server, a streamed prompt, a tool call with permission, `session/set_mode`, an MCP tool call, then an Adapter restart followed by `session/load` and a prompt that depends on the restored context.
+`e2e/run.mjs` drives the built Adapter against a real, logged-in `claude` in tmux: initialize, `session/new` with a Client MCP server, a streamed prompt, a tool call, a permission request in default mode, `session/set_mode`, an MCP tool call, then an Adapter restart followed by `session/load` and a prompt that depends on the restored context.
 
 ```
 npm ci

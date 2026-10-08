@@ -1,6 +1,6 @@
 #!/usr/bin/env node
-// Manual end-to-end suite: drives the built Adapter (dist/) against a real `claude` in tmux.
 import { spawn } from "node:child_process";
+import { existsSync } from "node:fs";
 import { mkdtemp, writeFile } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
@@ -112,7 +112,7 @@ await step("prompt: streamed text", async () => {
   assert(client.agentText().includes("PONG"), `no PONG in "${client.agentText()}"`);
 });
 
-await step("prompt: tool call and permission", async () => {
+await step("prompt: tool call", async () => {
   client.updates.length = 0;
   client.permissions.length = 0;
   const r = await client.request(
@@ -123,7 +123,20 @@ await step("prompt: tool call and permission", async () => {
   assert(r.stopReason === "end_turn", `stopReason ${r.stopReason}`);
   assert(client.updates.some((u) => u.sessionUpdate === "tool_call"), "no tool_call update");
   assert(client.agentText().includes("e2e-bash-ok"), "tool output not reported");
-  console.log(`     permission requests seen: ${client.permissions.length}`);
+});
+
+await step("permission request in default mode", async () => {
+  await client.request("session/set_mode", { sessionId, modeId: "default" });
+  client.permissions.length = 0;
+  const r = await client.request(
+    "session/prompt",
+    { sessionId, prompt: say("Use the Write tool to create perm-check.txt in the current directory containing the word granted, then say done.") },
+    TURN_TIMEOUT_MS,
+  );
+  assert(r.stopReason === "end_turn", `stopReason ${r.stopReason}`);
+  assert(client.permissions.length > 0, "no session/request_permission was sent");
+  assert(existsSync(join(cwd, "perm-check.txt")), "file not written after permission was granted");
+  initial.modes.currentModeId = "default";
 });
 
 await step("set_mode", async () => {
