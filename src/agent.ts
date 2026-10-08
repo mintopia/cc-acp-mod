@@ -44,6 +44,7 @@ interface QueuedPrompt {
 interface Session {
   host: Awaited<ReturnType<HostLauncher>>;
   queue: QueuedPrompt[];
+  intake?: Promise<void>;
   taskPlan: TaskPlan;
   tools: Map<string, { tool: string; input: Record<string, unknown> }>;
   current?: QueuedPrompt;
@@ -347,13 +348,23 @@ export class CcAcpAgent {
     const session = this.sessions.get(params.sessionId);
     if (!session) throw new Error(`Unknown session ${params.sessionId}`);
     const converted = promptText(params.prompt, session.attachments);
-    const text = typeof converted === "string" ? converted : await converted;
+    const text = typeof converted === "string" && !session.intake ? converted : await this.afterIntake(session, converted);
     return await new Promise<{ stopReason: acp.StopReason; usage?: acp.Usage }>((resolve, reject) => {
       const entry: QueuedPrompt = { text, resolve, reject, cancelRequested: false };
       session.queue.push(entry);
       signal?.addEventListener("abort", () => this.cancelPrompt(session, entry), { once: true });
       this.startNext(session);
     });
+  }
+
+  private afterIntake(session: Session, converted: string | Promise<string>): Promise<string> {
+    const ready = Promise.all([converted, session.intake]).then(([text]) => text);
+    const intake = ready.then(() => {}, () => {});
+    session.intake = intake;
+    void intake.then(() => {
+      if (session.intake === intake) session.intake = undefined;
+    });
+    return ready;
   }
 
   async cancel(params: { sessionId: string }): Promise<void> {
