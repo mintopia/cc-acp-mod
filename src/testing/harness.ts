@@ -19,6 +19,7 @@ const RESULT_DEFS: Record<string, string> = {
   initialize: "InitializeResponse",
   authenticate: "AuthenticateResponse",
   "session/new": "NewSessionResponse",
+  "session/load": "LoadSessionResponse",
   "session/prompt": "PromptResponse",
   "session/set_config_option": "SetSessionConfigOptionResponse",
 };
@@ -54,6 +55,7 @@ export interface Harness {
   /** Every message the Adapter wrote, in order; violations are reported by close(). */
   readonly emitted: JsonRpcMessage[];
   readonly mods: Map<string, FakeMod>;
+  readonly resumed: Map<string, boolean>;
   request<T = unknown>(method: string, params?: unknown): Promise<T>;
   notify(method: string, params?: unknown): Promise<void>;
   newSession(cwd?: string): Promise<{ sessionId: string; mod: FakeMod }>;
@@ -65,8 +67,10 @@ export async function startHarness(): Promise<Harness> {
   const dir = await mkdtemp(join(tmpdir(), "cc-acp-harness-"));
   const mods = new Map<string, FakeMod>();
   const channels: SessionChannel[] = [];
+  const resumed = new Map<string, boolean>();
 
-  const launch: HostLauncher = async ({ sessionId, onEvent }) => {
+  const launch: HostLauncher = async ({ sessionId, onEvent, resume }) => {
+    resumed.set(sessionId, resume === true);
     const channel = new SessionChannel(join(dir, `${sessionId}.sock`));
     channel.onEvent = onEvent;
     await channel.listen();
@@ -114,6 +118,7 @@ export async function startHarness(): Promise<Harness> {
   const h: Harness = {
     emitted,
     mods,
+    resumed,
     async request<T>(method: string, params?: unknown) {
       const id = nextId++;
       const reply = new Promise<JsonRpcMessage>((resolve) => pending.set(id, resolve));

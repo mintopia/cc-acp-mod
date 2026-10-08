@@ -47,3 +47,41 @@ test("the schema validator rejects malformed Adapter output", () => {
   expect(schemaViolation(good, "session/prompt")).toBeUndefined();
   expect(schemaViolation({ ...good, result: { stopReason: "nonsense" } }, "session/prompt")).toBeTruthy();
 });
+
+test("session/load replays the transcript, revives with resume, and the session accepts prompts", async () => {
+  const { mkdtemp, mkdir, writeFile, rm } = await import("node:fs/promises");
+  const { tmpdir } = await import("node:os");
+  const { join } = await import("node:path");
+  const config = await mkdtemp(join(tmpdir(), "cc-acp-config-"));
+  const prev = process.env.CLAUDE_CONFIG_DIR;
+  process.env.CLAUDE_CONFIG_DIR = config;
+  try {
+    const sessionId = "11111111-2222-3333-4444-555555555555";
+    await mkdir(join(config, "projects", "-tmp-x"), { recursive: true });
+    const lines = [
+      { type: "user", message: { role: "user", content: "<command-name>/foo</command-name>" } },
+      { type: "user", message: { role: "user", content: "hello" } },
+      { type: "assistant", message: { role: "assistant", content: [{ type: "thinking", thinking: "hm" }, { type: "text", text: "hi" }, { type: "tool_use", id: "t1", name: "Read", input: { file_path: "a.ts" } }] } },
+      { type: "user", message: { role: "user", content: [{ type: "tool_result", tool_use_id: "t1", content: "ok" }] } },
+    ];
+    await writeFile(join(config, "projects", "-tmp-x", `${sessionId}.jsonl`), lines.map((l) => JSON.stringify(l)).join("\n"));
+
+    h = await startHarness();
+    const res = await h.request<{ modes: { availableModes: { id: string }[] } }>("session/load", { sessionId, cwd: "/", mcpServers: [] });
+    expect(res.modes.availableModes.map((m) => m.id)).toContain("auto");
+    expect(h.updates(sessionId).map((u) => u.sessionUpdate)).toEqual([
+      "user_message_chunk", "agent_thought_chunk", "agent_message_chunk", "tool_call", "tool_call_update",
+    ]);
+    expect(h.resumed.get(sessionId)).toBe(true);
+
+    const prompt = h.request("session/prompt", { sessionId, prompt: [{ type: "text", text: "again" }] });
+    const mod = h.mods.get(sessionId)!;
+    await mod.nextCommand((c) => c.type === "prompt");
+    await mod.emit({ type: "turn_completed", reason: "answer" });
+    expect(await prompt).toEqual({ stopReason: "end_turn" });
+  } finally {
+    if (prev === undefined) delete process.env.CLAUDE_CONFIG_DIR;
+    else process.env.CLAUDE_CONFIG_DIR = prev;
+    await rm(config, { recursive: true, force: true });
+  }
+});

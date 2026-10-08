@@ -24,6 +24,7 @@ export async function launchHostSession(opts: {
   env?: NodeJS.ProcessEnv;
   disallowedTools?: string[];
   mcpServers?: Record<string, HostMcpServer>;
+  resume?: boolean;
   onEvent: (event: ModEvent) => void;
   startupTimeoutMs?: number;
 }): Promise<HostSession> {
@@ -37,7 +38,7 @@ export async function launchHostSession(opts: {
   channel.onEvent = opts.onEvent;
   await channel.listen();
 
-  const argv = [executable, "--plugin-dir", MOD_DIR, "--session-id", opts.sessionId];
+  const argv = [executable, "--plugin-dir", MOD_DIR, opts.resume ? "--resume" : "--session-id", opts.sessionId];
   argv.push(...modelArgs(env));
   argv.push(...mcpArgs(opts.mcpServers));
   if (opts.disallowedTools?.length) argv.push("--disallowed-tools", opts.disallowedTools.join(","));
