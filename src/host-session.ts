@@ -25,6 +25,7 @@ export async function launchHostSession(opts: {
   disallowedTools?: string[];
   mcpServers?: Record<string, HostMcpServer>;
   resume?: boolean;
+  forkFrom?: string;
   onEvent: (event: ModEvent) => void;
   startupTimeoutMs?: number;
 }): Promise<HostSession> {
@@ -38,7 +39,7 @@ export async function launchHostSession(opts: {
   channel.onEvent = opts.onEvent;
   await channel.listen();
 
-  const argv = [executable, "--plugin-dir", MOD_DIR, opts.resume ? "--resume" : "--session-id", opts.sessionId];
+  const argv = [executable, "--plugin-dir", MOD_DIR, ...sessionArgs(opts)];
   argv.push(...modelArgs(env));
   argv.push(...mcpArgs(opts.mcpServers));
   if (opts.disallowedTools?.length) argv.push("--disallowed-tools", opts.disallowedTools.join(","));
@@ -66,6 +67,11 @@ export async function launchHostSession(opts: {
 export async function stopHostSession(host: HostSession): Promise<void> {
   await killSession(host.sessionId);
   await host.channel.close();
+}
+
+export function sessionArgs(opts: { sessionId: string; resume?: boolean; forkFrom?: string }): string[] {
+  if (opts.forkFrom) return ["--resume", opts.forkFrom, "--fork-session", "--session-id", opts.sessionId];
+  return [opts.resume ? "--resume" : "--session-id", opts.sessionId];
 }
 
 export function modelArgs(env: NodeJS.ProcessEnv): string[] {

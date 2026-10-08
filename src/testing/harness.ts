@@ -20,6 +20,7 @@ const RESULT_DEFS: Record<string, string> = {
   authenticate: "AuthenticateResponse",
   "session/new": "NewSessionResponse",
   "session/load": "LoadSessionResponse",
+  "session/fork": "ForkSessionResponse",
   "session/prompt": "PromptResponse",
   "session/set_config_option": "SetSessionConfigOptionResponse",
 };
@@ -56,6 +57,7 @@ export interface Harness {
   readonly emitted: JsonRpcMessage[];
   readonly mods: Map<string, FakeMod>;
   readonly resumed: Map<string, boolean>;
+  readonly forkedFrom: Map<string, string>;
   request<T = unknown>(method: string, params?: unknown): Promise<T>;
   notify(method: string, params?: unknown): Promise<void>;
   newSession(cwd?: string): Promise<{ sessionId: string; mod: FakeMod }>;
@@ -68,8 +70,10 @@ export async function startHarness(): Promise<Harness> {
   const mods = new Map<string, FakeMod>();
   const channels: SessionChannel[] = [];
   const resumed = new Map<string, boolean>();
+  const forkedFrom = new Map<string, string>();
 
-  const launch: HostLauncher = async ({ sessionId, onEvent, resume }) => {
+  const launch: HostLauncher = async ({ sessionId, onEvent, resume, forkFrom }) => {
+    if (forkFrom) forkedFrom.set(sessionId, forkFrom);
     resumed.set(sessionId, resume === true);
     const channel = new SessionChannel(join(dir, `${sessionId}.sock`));
     channel.onEvent = onEvent;
@@ -119,6 +123,7 @@ export async function startHarness(): Promise<Harness> {
     emitted,
     mods,
     resumed,
+    forkedFrom,
     async request<T>(method: string, params?: unknown) {
       const id = nextId++;
       const reply = new Promise<JsonRpcMessage>((resolve) => pending.set(id, resolve));
