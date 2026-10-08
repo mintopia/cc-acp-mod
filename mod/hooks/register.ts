@@ -3,6 +3,7 @@ import type { Register } from 'claude-code'
 const PROTOCOL_VERSION = 1
 const MOD_VERSION = '0.1.0'
 const RETRY_MS = 1_000
+const TITLE_MAX = 80
 
 type Event =
   | { type: 'turn_started'; turnId: string }
@@ -75,11 +76,12 @@ async function reportUsage($: any, e: any): Promise<void> {
   if (!u || typeof u.input_tokens !== 'number' || typeof u.output_tokens !== 'number') return
   const cacheRead = u.cache_read_input_tokens
   const cacheWrite = u.cache_creation_input_tokens
-  const contextUsed = u.input_tokens + (cacheRead ?? 0) + (cacheWrite ?? 0) + u.output_tokens
   let contextSize = 200_000
+  let contextUsed = u.input_tokens + (cacheRead ?? 0) + (cacheWrite ?? 0) + u.output_tokens
   try {
-    const size = await $.session.contextWindow?.()
-    if (typeof size === 'number') contextSize = size
+    const { context } = await $.session.usage()
+    if (typeof context.window === 'number') contextSize = context.window
+    if (typeof context.tokens === 'number') contextUsed = context.tokens
   } catch {}
   emit($, {
     type: 'usage',
@@ -93,12 +95,13 @@ async function reportUsage($: any, e: any): Promise<void> {
 }
 
 async function reportTitle($: any): Promise<void> {
+  if (lastTitle !== undefined) return
   try {
-    const title = await $.session.title?.()
-    if (typeof title === 'string' && title !== '' && title !== lastTitle) {
-      lastTitle = title
-      emit($, { type: 'title', title })
-    }
+    const first = (await $.session.messages()).find((m: any) => m.role === 'user' && typeof m.text === 'string' && m.text.trim() !== '')
+    if (!first) return
+    const line = first.text.trim().split('\n')[0].replace(/\s+/g, ' ')
+    lastTitle = line.length > TITLE_MAX ? `${line.slice(0, TITLE_MAX - 1)}…` : line
+    emit($, { type: 'title', title: lastTitle })
   } catch {}
 }
 
