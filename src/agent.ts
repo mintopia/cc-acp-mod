@@ -1,6 +1,8 @@
 import { randomUUID } from "node:crypto";
 import * as acp from "@agentclientprotocol/sdk";
-import { launchHostSession, type HostSession } from "./host-session.js";
+import { launchHostSession, MODE_PROBE_COMMAND, type HostSession, type ModeTracker } from "./host-session.js";
+import { switchMode, toAcpModeState } from "./modes.js";
+import { pressShiftTab, typeCommand } from "./tmux.js";
 import type { ModEvent, TurnReason } from "./protocol.js";
 
 export interface UpdateSink {
@@ -10,8 +12,8 @@ export interface UpdateSink {
 export type HostLauncher = (opts: {
   sessionId: string;
   cwd: string;
-  onEvent: (event: ModEvent) => void;
-}) => Promise<Pick<HostSession, "sessionId"> & { channel: Pick<HostSession["channel"], "send" | "close"> }>;
+  onEvent: (event: ModEvent, mode: ModeTracker) => void;
+}) => Promise<Pick<HostSession, "sessionId" | "modes" | "mode"> & { channel: Pick<HostSession["channel"], "send" | "close"> }>;
 
 interface QueuedPrompt {
   text: string;
@@ -25,6 +27,10 @@ interface Session {
   queue: QueuedPrompt[];
   current?: QueuedPrompt;
 }
+
+const MODE_REPORT_TIMEOUT_MS = 5_000;
+const KEY_SETTLE_MS = 150;
+const PROBE_DRAIN_MS = 500;
 
 const STOP_REASONS: Partial<Record<TurnReason, acp.StopReason>> = {
   answer: "end_turn",
@@ -54,10 +60,33 @@ export class CcAcpAgent {
     const host = await this.launch({
       sessionId,
       cwd: params.cwd,
-      onEvent: (event) => void this.onEvent(sessionId, event).catch(() => {}),
+      onEvent: (event, mode) => void this.onEvent(sessionId, event, mode).catch(() => {}),
     });
     this.sessions.set(sessionId, { host, queue: [] });
-    return { sessionId };
+    return { sessionId, modes: toAcpModeState(host.modes, host.mode.current) };
+  }
+
+  async setSessionMode(params: acp.SetSessionModeRequest): Promise<acp.SetSessionModeResponse> {
+    const session = this.sessions.get(params.sessionId);
+    if (!session) throw new Error(`Unknown session ${params.sessionId}`);
+    const { host } = session;
+    if (!host.modes.availableModes.some((m) => m === params.modeId)) {
+      throw new Error(`Mode "${params.modeId}" is not available for this session`);
+    }
+    await switchMode({
+      target: params.modeId,
+      current: () => host.mode.current,
+      pressShiftTab: () => pressShiftTab(host.sessionId),
+      waitForChange: async () => {
+        await new Promise((r) => setTimeout(r, KEY_SETTLE_MS));
+        const report = host.mode.waitForReport(MODE_REPORT_TIMEOUT_MS);
+        await typeCommand(host.sessionId, `/${MODE_PROBE_COMMAND}`);
+        const mode = await report;
+        await new Promise((r) => setTimeout(r, PROBE_DRAIN_MS));
+        return mode;
+      },
+    });
+    return {};
   }
 
   async authenticate(): Promise<void> {}
@@ -106,9 +135,16 @@ export class CcAcpAgent {
     entry.resolve("cancelled");
   }
 
-  private async onEvent(sessionId: string, event: ModEvent): Promise<void> {
+  private async onEvent(sessionId: string, event: ModEvent, mode: ModeTracker): Promise<void> {
     const session = this.sessions.get(sessionId);
-    if (event.type === "chunk") {
+    if (event.type === "mode") {
+      if (mode.update(event.mode)) {
+        await this.client.sessionUpdate({
+          sessionId,
+          update: { sessionUpdate: "current_mode_update", currentModeId: event.mode },
+        });
+      }
+    } else if (event.type === "chunk") {
       await this.client.sessionUpdate({
         sessionId,
         update: { sessionUpdate: "agent_message_chunk", content: { type: "text", text: event.text } },

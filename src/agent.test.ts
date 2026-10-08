@@ -1,16 +1,33 @@
-import { expect, test } from "vitest";
+import { expect, test, vi } from "vitest";
+import * as tmux from "./tmux.js";
 import { CcAcpAgent, type HostLauncher } from "./agent.js";
+import { ModeTracker } from "./host-session.js";
+import { resolveModes } from "./modes.js";
 import type { Command, ModEvent } from "./protocol.js";
 
 function harness() {
   const sent: Command[] = [];
+  const updates: unknown[] = [];
+  const modes = resolveModes([], {}, false);
+  const mode = new ModeTracker(modes.initialMode);
   let emit!: (e: ModEvent) => void;
   const launch: HostLauncher = async ({ sessionId, onEvent }) => {
-    emit = onEvent;
-    return { sessionId, channel: { send: (c) => void sent.push(c), close: async () => {} } };
+    emit = (e) => onEvent(e, mode);
+    return {
+      sessionId,
+      modes,
+      mode,
+      channel: {
+        send: (c) => {
+          sent.push(c);
+        },
+        close: async () => {},
+      },
+    };
   };
-  const agent = new CcAcpAgent({ sessionUpdate: async () => {} }, "0", launch);
-  return { agent, sent, emit: (e: ModEvent) => emit(e) };
+  const probeReports: string[] = [];
+  const agent = new CcAcpAgent({ sessionUpdate: async (u) => void updates.push(u.update) }, "0", launch);
+  return { agent, sent, updates, probeReports, emit: (e: ModEvent) => emit(e) };
 }
 
 const tick = () => new Promise((r) => setTimeout(r, 0));
@@ -71,4 +88,43 @@ test("cancelling a queued prompt removes it without touching the running turn", 
   h.emit({ type: "turn_completed", reason: "answer" });
   expect(await first).toEqual({ stopReason: "end_turn" });
   expect(h.sent).toEqual([{ type: "prompt", text: "one" }]);
+});
+
+test("session/new reports the mode catalogue and current mode", async () => {
+  const h = harness();
+  const res = await h.agent.newSession({ cwd: "/", mcpServers: [] });
+  expect(res.modes?.currentModeId).toBe("default");
+  expect(res.modes?.availableModes.map((m) => m.id)).toContain("plan");
+});
+
+test("session/set_mode probes the Mod after each Shift+Tab and emits current_mode_update", async () => {
+  const h = harness();
+  const { sessionId } = await h.agent.newSession({ cwd: "/", mcpServers: [] });
+  vi.spyOn(tmux, "pressShiftTab").mockResolvedValue();
+  const typed: string[] = [];
+  vi.spyOn(tmux, "typeCommand").mockImplementation(async (_id, text) => {
+    typed.push(text);
+    h.emit({ type: "mode", mode: h.probeReports.shift()! });
+  });
+  h.probeReports.push("acceptEdits", "plan");
+  await h.agent.setSessionMode({ sessionId, modeId: "plan" });
+  expect(typed).toEqual(["/cc-acp-probe-mode", "/cc-acp-probe-mode"]);
+  expect(h.updates).toEqual([
+    { sessionUpdate: "current_mode_update", currentModeId: "acceptEdits" },
+    { sessionUpdate: "current_mode_update", currentModeId: "plan" },
+  ]);
+});
+
+test("session/set_mode rejects a mode that is not offered", async () => {
+  const h = harness();
+  const { sessionId } = await h.agent.newSession({ cwd: "/", mcpServers: [] });
+  await expect(h.agent.setSessionMode({ sessionId, modeId: "dontAsk" })).rejects.toThrow(/not available/);
+});
+
+test("in-session mode changes emit current_mode_update", async () => {
+  const h = harness();
+  await h.agent.newSession({ cwd: "/", mcpServers: [] });
+  h.emit({ type: "mode", mode: "plan" });
+  await tick();
+  expect(h.updates).toEqual([{ sessionUpdate: "current_mode_update", currentModeId: "plan" }]);
 });
