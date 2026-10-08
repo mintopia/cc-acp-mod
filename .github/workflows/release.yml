@@ -13,12 +13,13 @@ jobs:
       release_created: ${{ steps.release.outputs.release_created }}
       tag_name: ${{ steps.release.outputs.tag_name }}
     steps:
-      - uses: googleapis/release-please-action@v4
+      - uses: googleapis/release-please-action@v5
         id: release
         with:
           config-file: release-please-config.json
           manifest-file: .release-please-manifest.json
           target-branch: main
+          token: ${{ secrets.RELEASE_PLEASE_TOKEN || github.token }}
   publish:
     needs: release-please
     if: needs.release-please.outputs.release_created == 'true'
@@ -49,5 +50,5 @@ jobs:
       - run: >-
           gh pr create -R "$GITHUB_REPOSITORY" -B develop -H main -t "chore: merge $TAG back into develop" -b "Brings the release commit and CHANGELOG from main into develop."
         env:
-          GH_TOKEN: ${{ github.token }}
+          GH_TOKEN: ${{ secrets.RELEASE_PLEASE_TOKEN || github.token }}
           TAG: ${{ needs.release-please.outputs.tag_name }}
